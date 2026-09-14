@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets — never commit
+.env
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# Data — never commit
+data/landing/*
+data/warehouse/*
+!data/landing/.gitkeep
+!data/warehouse/.gitkeep
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# dbt
+dbt/target/
+dbt/.user.yml
+dbt/dbt_packages/
+dbt/logs/
+
+# Airflow
+logs/
+airflow.db
+airflow.cfg
+standalone_admin_password.txt
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

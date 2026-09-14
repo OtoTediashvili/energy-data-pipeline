@@ -1,0 +1,112 @@
+# Local Airflow 3 stack: Postgres metadata DB + LocalExecutor.
+#
+# Deliberately slimmer than the official compose file — no Redis, no Celery,
+# no Flower. LocalExecutor handles far more than a portfolio project needs and
+# removes two moving parts. Swap to CeleryExecutor only if you have a reason.
+#
+#   make up     -> http://localhost:8080  (admin / admin)
+#   make down
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:${AIRFLOW_VERSION:-3.0.2}-python3.12
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-local-dev-secret-change-me}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    # Make src/ importable inside the containers
+    PYTHONPATH: /opt/airflow/src
+    # Pipeline settings, read by pipeline.config.Settings
+    PIPELINE_ENV: local
+    PIPELINE_LOG_JSON: "true"
+    PIPELINE_DATA_DIR: /opt/airflow/data
+    PIPELINE_DUCKDB_PATH: /opt/airflow/data/warehouse/warehouse.duckdb
+    PIPELINE_SOURCE_BASE_URL: ${PIPELINE_SOURCE_BASE_URL:-https://example.com/api}
+    PIPELINE_SOURCE_API_KEY: ${PIPELINE_SOURCE_API_KEY:-}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
+    - ./dbt:/opt/airflow/dbt
+    - ./data:/opt/airflow/data
+    - ./logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname Local --lastname Dev \
+          --role Admin --email admin@localhost || true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

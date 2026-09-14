@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: dim_country
+    description: Country dimension with a surrogate key.
+    columns:
+      - name: country_sk
+        description: Surrogate key.
+        data_tests: [unique, not_null]
+      - name: country_code
+        data_tests: [unique, not_null]
+
+  - name: fct_daily_prices
+    description: "Daily price aggregates per country. Grain: one row per country per day."
+    columns:
+      - name: country_sk
+        description: FK to dim_country.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_country')
+                field: country_sk
+      - name: observed_date
+        data_tests: [not_null]
+      - name: observation_count
+        description: Rows contributing to this aggregate. Zero would mean a bug.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [country_sk, observed_date]

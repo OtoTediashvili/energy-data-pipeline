@@ -1,0 +1,30 @@
+name: warehouse
+version: "1.0.0"
+config-version: 2
+profile: warehouse
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  warehouse:
+    +materialized: view
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table
+
+seeds:
+  warehouse:
+    +schema: raw
+
+vars:
+  # Overridden by Airflow so dbt and the loader agree on the partition.
+  logical_date: "1970-01-01"
