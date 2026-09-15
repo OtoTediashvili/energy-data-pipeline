@@ -18,18 +18,23 @@ jobs:
     name: Lint, types, tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
-      - name: Set up Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      # A venv, not --system. Ubuntu's system Python is PEP 668
+      # externally-managed, so `uv pip install --system` is refused outright.
+      # Appending to GITHUB_PATH makes the venv active for later steps too.
+      - name: Create virtualenv
+        run: |
+          uv venv --python ${{ env.PYTHON_VERSION }}
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev,dbt]"
+        run: uv pip install -e ".[dev,dbt]"
 
       - name: Ruff lint
         run: ruff check --output-format=github .
@@ -55,20 +60,26 @@ jobs:
     name: Airflow DAGs import cleanly
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
-      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtualenv
+        run: |
+          uv venv --python ${{ env.PYTHON_VERSION }}
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
+      # Airflow pins its transitive deps hard, so it is installed against the
+      # official constraints file rather than alongside the analytics stack.
       - name: Install Airflow with constraints
         run: |
           AIRFLOW_VERSION=$(grep -oP 'AIRFLOW_VERSION:-\K[0-9.]+' docker-compose.yml || echo "3.0.2")
           CONSTRAINT="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${{ env.PYTHON_VERSION }}.txt"
-          uv pip install --system "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT}"
-          uv pip install --system -e .
+          uv pip install "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT}"
+          uv pip install -e .
 
       - name: Import every DAG
         env:
@@ -91,15 +102,20 @@ jobs:
     name: dbt parses and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
-      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtualenv
+        run: |
+          uv venv --python ${{ env.PYTHON_VERSION }}
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
-      - run: uv pip install --system -e ".[dbt]"
+      - name: Install dependencies
+        run: uv pip install -e ".[dbt]"
 
       - name: dbt deps
         working-directory: dbt
@@ -110,7 +126,7 @@ jobs:
         run: dbt parse
 
       # Seeds must load before models run. A source() has no DAG edge to a
-      # seed, so a single `dbt build` races and the staging model can't find
+      # seed, so a single `dbt build` races and the staging model cannot find
       # its table. Two steps, deterministic order.
       - name: dbt seed
         working-directory: dbt
@@ -124,7 +140,7 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
