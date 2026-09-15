@@ -62,7 +62,7 @@ def load_json_partition(
             ?::DATE      AS _logical_date,
             ?::TIMESTAMP AS _ingested_at,
             ?            AS _source_file
-        FROM read_json_auto(?)
+        FROM read_json_auto(?, hive_partitioning=false)
     """
     args = [logical_date, ingested_at, str(source_file), str(source_file)]
 

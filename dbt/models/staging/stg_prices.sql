@@ -5,7 +5,7 @@
 
 with source as (
 
-    select * from {{ source('raw', 'raw_prices') }}
+    select * from {{ source('raw', 'prices') }}
 
 ),
 
