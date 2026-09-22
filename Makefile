@@ -36,6 +36,11 @@ dbt-docs: ## Generate and serve dbt docs
 	. .venv/bin/activate && cd dbt && dbt docs generate && dbt docs serve
 
 up: ## Start Airflow locally
+	mkdir -p logs
+	# Docker creates a fresh bind-mounted ./logs as root; the containers run
+	# as AIRFLOW_UID and can't write into it without this. Fixed from inside
+	# a container so it works without host sudo.
+	docker compose run --rm --no-deps --entrypoint chown -u root airflow-init -R 50000:0 /opt/airflow/logs
 	docker compose up -d
 	@echo "Airflow: http://localhost:8080 (admin / admin)"
 
