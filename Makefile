@@ -30,7 +30,7 @@ dbt-deps: ## Install dbt packages
 	. .venv/bin/activate && cd dbt && dbt deps
 
 dbt-build: ## Run dbt models and tests
-	. .venv/bin/activate && cd dbt && dbt build
+	. .venv/bin/activate && cd dbt && dbt seed && dbt build --exclude "resource_type:seed"
 
 dbt-docs: ## Generate and serve dbt docs
 	. .venv/bin/activate && cd dbt && dbt docs generate && dbt docs serve
