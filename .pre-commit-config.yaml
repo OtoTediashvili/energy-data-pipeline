@@ -1,9 +1,21 @@
+# Hooks that run on every `git commit`.
+#
+# ruff and mypy run from the project's own .venv (repo: local), not from
+# pre-commit's isolated environments. That gives one toolchain, pinned by
+# pyproject.toml and shared by pre-commit, `make check` and CI. Isolated hook
+# environments drift: they carry their own tool versions and lack the project's
+# dependencies, so strict mypy sees pytest and tenacity decorators as untyped
+# and rejects code that `make check` accepts.
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # Fixtures are recorded API responses, kept byte-for-byte. Never rewrite them.
       - id: trailing-whitespace
+        exclude: ^tests/fixtures/
       - id: end-of-file-fixer
+        exclude: ^tests/fixtures/
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
@@ -11,19 +23,24 @@ repos:
         args: ["--maxkb=500"]
       - id: detect-private-key
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.4
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff
+        entry: .venv/bin/ruff check --fix
+        language: system
+        types_or: [python, pyi]
       - id: ruff-format
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
-    hooks:
+        name: ruff format
+        entry: .venv/bin/ruff format
+        language: system
+        types_or: [python, pyi]
       - id: mypy
-        additional_dependencies: [pydantic, pydantic-settings, types-requests]
-        args: [--ignore-missing-imports]
+        name: mypy (project venv, same as make check)
+        entry: .venv/bin/mypy
+        language: system
+        types: [python]
+        pass_filenames: false
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.23.3
