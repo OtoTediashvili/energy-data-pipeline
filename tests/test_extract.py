@@ -11,15 +11,18 @@ from datetime import date
 import httpx
 import pytest
 import respx
+from structlog.testing import capture_logs
 
 from pipeline.config import Settings
 from pipeline.extract import (
+    TOKEN_PARAM,
     PermanentSourceError,
     extract_to_landing,
     fetch,
     land,
     landing_path,
 )
+from pipeline.parse import parse_prices
 
 LOGICAL_DATE = date(2026, 9, 13)
 
@@ -43,12 +46,39 @@ def test_fetch_returns_body(settings: Settings) -> None:
 
 
 @respx.mock
-def test_fetch_sends_auth_header(settings: Settings) -> None:
+def test_fetch_sends_token_as_query_param(settings: Settings) -> None:
+    """ENTSO-E reads securityToken from the query string and ignores headers."""
     route = respx.get("https://source.test/api/prices").mock(
         return_value=httpx.Response(200, content=b"{}")
     )
     fetch("prices", settings=settings)
-    assert route.calls.last.request.headers["Authorization"] == "Bearer test-key"
+    request = route.calls.last.request
+    assert request.url.params[TOKEN_PARAM] == "test-key"
+    assert "Authorization" not in request.headers
+
+
+@respx.mock
+def test_fetch_with_empty_endpoint_calls_base_url(settings: Settings) -> None:
+    """ENTSO-E is one endpoint: nothing may be appended to the base URL."""
+    route = respx.get("https://source.test/api").mock(
+        return_value=httpx.Response(200, content=b"<ok/>")
+    )
+    assert fetch(settings=settings, params={"documentType": "A44"}) == b"<ok/>"
+    assert route.calls.last.request.url.path == "/api"
+
+
+@respx.mock
+def test_fetch_never_logs_the_token(settings: Settings) -> None:
+    """The token travels in the URL, so it must stay out of every log event.
+
+    Airflow stores task logs and shows them in its UI: a token logged once is
+    exposed to anyone who can read that run.
+    """
+    respx.get("https://source.test/api").mock(return_value=httpx.Response(200, content=b"<ok/>"))
+    with capture_logs() as events:
+        fetch(settings=settings, params={"documentType": "A44"})
+    assert events, "expected fetch to emit log events"
+    assert all("test-key" not in repr(event) for event in events)
 
 
 @respx.mock
@@ -101,3 +131,30 @@ def test_extract_to_landing_end_to_end(settings: Settings, sample_payload: bytes
     )
     path = extract_to_landing("prices", "prices", LOGICAL_DATE, settings=settings)
     assert path.read_bytes() == sample_payload
+
+
+@pytest.mark.integration
+def test_live_entsoe_day_ahead_prices_parse() -> None:
+    """Hits the real ENTSO-E API with the token from .env.
+
+    Excluded from CI by its marker and skipped when no token is configured. Run
+    locally with `make test-all`. The only test that checks the real contract
+    (parameter names, endpoint shape, auth) rather than our model of it.
+    """
+    cfg = Settings(source_base_url="https://web-api.tp.entsoe.eu/api")
+    if not cfg.source_api_key.get_secret_value():
+        pytest.skip("no ENTSO-E token in .env")
+    zone = "10YNL----------L"
+    body = fetch(
+        settings=cfg,
+        params={
+            "documentType": "A44",
+            "in_Domain": zone,
+            "out_Domain": zone,
+            "periodStart": "202609240000",
+            "periodEnd": "202609242300",
+        },
+    )
+    rows = parse_prices(body)
+    assert len(rows) >= 96
+    assert {r.bidding_zone for r in rows} == {zone}

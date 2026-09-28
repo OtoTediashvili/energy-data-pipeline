@@ -28,6 +28,10 @@ log = get_logger(__name__)
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
+# ENTSO-E authenticates with a query parameter, not a header. The token is added
+# to the outgoing request only, never to anything that gets logged.
+TOKEN_PARAM = "securityToken"
+
 
 class TransientSourceError(RuntimeError):
     """Source failed in a way that is worth retrying."""
@@ -67,25 +71,31 @@ def _raise_for_status(response: httpx.Response) -> None:
     reraise=True,
 )
 def fetch(
-    endpoint: str,
+    endpoint: str = "",
     params: dict[str, str] | None = None,
     settings: Settings | None = None,
 ) -> bytes:
-    """GET one endpoint and return the raw response body.
+    """GET the source and return the raw response body.
 
     Retries on 429 and 5xx with exponential backoff. Fails immediately on 4xx,
     because a malformed request will not fix itself.
+
+    ENTSO-E exposes a single endpoint, so ``endpoint`` defaults to empty and the
+    base URL is called as-is. The token rides as a query parameter on the
+    outgoing request only: ``params`` is what gets logged, and it never holds it.
     """
     cfg = settings or get_settings()
-    url = f"{cfg.source_base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    base = cfg.source_base_url.rstrip("/")
+    url = f"{base}/{endpoint.lstrip('/')}" if endpoint else base
 
-    headers: dict[str, str] = {}
-    if cfg.source_api_key.get_secret_value():
-        headers["Authorization"] = f"Bearer {cfg.source_api_key.get_secret_value()}"
+    query = dict(params or {})
+    token = cfg.source_api_key.get_secret_value()
+    if token:
+        query[TOKEN_PARAM] = token
 
     log.info("fetch.start", url=url, params=params)
     with httpx.Client(timeout=cfg.request_timeout_seconds) as client:
-        response = client.get(url, params=params, headers=headers)
+        response = client.get(url, params=query)
 
     _raise_for_status(response)
     log.info("fetch.ok", url=url, bytes=len(response.content))
