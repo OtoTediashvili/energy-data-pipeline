@@ -74,3 +74,26 @@ def test_missing_file_raises(settings: Settings) -> None:
 def test_row_count_of_unknown_table_is_zero(settings: Settings) -> None:
     with warehouse(settings) as conn:
         assert row_count(conn, "does_not_exist") == 0
+
+
+def test_hive_path_does_not_leak_partition_columns(
+    settings: Settings, sample_payload: bytes
+) -> None:
+    """Regression: DuckDB parses dataset=/year=/month= paths into columns.
+
+    With hive_partitioning left on, read_json_auto silently widens the table by
+    three fields duplicating _logical_date. Pin the exact schema.
+    """
+    path = land(sample_payload, "prices", DAY_ONE, settings)
+    with warehouse(settings) as conn:
+        load_json_partition(conn, path, "prices", DAY_ONE)
+        columns = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = ? AND table_name = ?",
+                [RAW_SCHEMA, "prices"],
+            ).fetchall()
+        }
+    assert columns == {"id", "country", "value", "_logical_date", "_ingested_at", "_source_file"}
+    assert not {"dataset", "year", "month"} & columns
