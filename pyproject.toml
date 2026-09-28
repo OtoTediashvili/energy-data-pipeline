@@ -13,6 +13,7 @@ dependencies = [
     "pyarrow>=16.0",
     "polars>=1.0",
     "pandas>=2.2",
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
     "mypy>=1.11",
     "pre-commit>=3.8",
     "respx>=0.21",
+    "types-defusedxml>=0.7",
 ]
 dbt = [
     "dbt-core>=1.8",
@@ -70,7 +72,7 @@ warn_unreachable = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["duckdb.*", "polars.*", "airflow.*"]
+module = ["duckdb.*", "polars.*", "airflow.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest
