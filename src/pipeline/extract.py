@@ -41,11 +41,17 @@ class PermanentSourceError(RuntimeError):
     """Source failed in a way that will not improve on retry."""
 
 
-def landing_path(dataset: str, logical_date: date, settings: Settings | None = None) -> Path:
+def landing_path(
+    dataset: str,
+    logical_date: date,
+    settings: Settings | None = None,
+    suffix: str = ".json",
+) -> Path:
     """Return the deterministic landing location for one dataset partition.
 
     Hive-style partitioning so that DuckDB, Spark and Athena can all read the
-    tree without an external catalogue.
+    tree without an external catalogue. ``suffix`` records the source format
+    (".xml" for ENTSO-E), so a landed file says what it contains.
     """
     cfg = settings or get_settings()
     return (
@@ -53,7 +59,7 @@ def landing_path(dataset: str, logical_date: date, settings: Settings | None = N
         / f"dataset={dataset}"
         / f"year={logical_date.year:04d}"
         / f"month={logical_date.month:02d}"
-        / f"{dataset}_{logical_date.isoformat()}.json"
+        / f"{dataset}_{logical_date.isoformat()}{suffix}"
     )
 
 
@@ -102,15 +108,34 @@ def fetch(
     return response.content
 
 
+ACKNOWLEDGEMENT_MARKER = b"Acknowledgement_MarketDocument"
+
+
+def _reject_acknowledgement(payload: bytes) -> None:
+    """Refuse to land an ENTSO-E error envelope.
+
+    ENTSO-E reports errors and "no data" as an Acknowledgement document,
+    sometimes with HTTP 200, so fetch() cannot tell it apart from data. Landing
+    paths are deterministic, so landing one would overwrite a good raw file for
+    the same date with an error message. This checks the root element only; it
+    is not parsing, and the root always sits in the first few hundred bytes.
+    """
+    if ACKNOWLEDGEMENT_MARKER in payload[:1024]:
+        preview = payload[:400].decode("utf-8", errors="replace")
+        raise PermanentSourceError(f"source returned an Acknowledgement, not data: {preview}")
+
+
 def land(
     payload: bytes,
     dataset: str,
     logical_date: date,
     settings: Settings | None = None,
+    suffix: str = ".json",
 ) -> Path:
     """Write a payload to its deterministic landing path and return it."""
     cfg = settings or get_settings()
-    target = landing_path(dataset, logical_date, cfg)
+    _reject_acknowledgement(payload)
+    target = landing_path(dataset, logical_date, cfg, suffix)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     # Write to a temp file then rename: a crash mid-write never leaves a
@@ -129,7 +154,8 @@ def extract_to_landing(
     logical_date: date,
     params: dict[str, str] | None = None,
     settings: Settings | None = None,
+    suffix: str = ".json",
 ) -> Path:
     """Fetch one interval and land it. Safe to rerun for the same date."""
     payload = fetch(endpoint, params=params, settings=settings)
-    return land(payload, dataset, logical_date, settings=settings)
+    return land(payload, dataset, logical_date, settings=settings, suffix=suffix)

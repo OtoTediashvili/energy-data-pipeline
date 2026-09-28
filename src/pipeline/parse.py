@@ -1,8 +1,10 @@
 """Parse: ENTSO-E Publication_MarketDocument XML -> flat, typed price rows.
 
-This is the step between the landing zone and the warehouse. It is a pure
-transformation: bytes in, rows out. It never fetches, so a parser bug is fixed
-by replaying files already on disk, never by re-hitting a rate-limited API.
+This is the step between the landing zone and the warehouse. Its core,
+parse_prices, is a pure transformation: bytes in, rows out. It never fetches,
+so a parser bug is fixed by replaying files already on disk, never by
+re-hitting a rate-limited API. parse_landed_file applies it to one landed file
+and writes the result into the parsed zone.
 
 Four properties of the real data drive the design:
 
@@ -25,13 +27,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from xml.etree.ElementTree import Element
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from defusedxml import ElementTree as SafeET
+
+from pipeline.config import Settings, get_settings
+from pipeline.logging_config import get_logger
+
+log = get_logger(__name__)
 
 PUBLICATION_ROOT = "Publication_MarketDocument"
 ACKNOWLEDGEMENT_ROOT = "Acknowledgement_MarketDocument"
@@ -249,3 +256,40 @@ def write_parquet(rows: list[PricePoint], target: Path) -> Path:
     pq.write_table(table, tmp)
     tmp.replace(target)
     return target
+
+
+# -------------------------------------------------------------- parsed zone
+
+
+def parsed_path(dataset: str, logical_date: date, settings: Settings | None = None) -> Path:
+    """Deterministic parsed-zone location, mirroring the landing layout 1:1.
+
+    One landed file maps to exactly one Parquet file, so reparsing a date
+    replaces its output and never accumulates duplicates.
+    """
+    cfg = settings or get_settings()
+    return (
+        cfg.parsed_dir
+        / f"dataset={dataset}"
+        / f"year={logical_date.year:04d}"
+        / f"month={logical_date.month:02d}"
+        / f"{dataset}_{logical_date.isoformat()}.parquet"
+    )
+
+
+def parse_landed_file(
+    landed: Path,
+    dataset: str,
+    logical_date: date,
+    settings: Settings | None = None,
+) -> tuple[Path, int]:
+    """Parse one landed file into its parsed-zone Parquet. Returns (path, rows).
+
+    Only ever reads the landed file. Parsing completes before anything is
+    written, so a document that fails to parse writes nothing, and any earlier
+    output for that date is left exactly as it was.
+    """
+    rows = parse_prices(landed.read_bytes())
+    target = write_parquet(rows, parsed_path(dataset, logical_date, settings))
+    log.info("parse.ok", source=str(landed), target=str(target), rows=len(rows))
+    return target, len(rows)

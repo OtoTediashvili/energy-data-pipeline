@@ -44,9 +44,15 @@ class Settings(BaseSettings):
         """Raw, immutable, as-received files. Never mutated after write."""
         return self.data_dir / "landing"
 
+    @property
+    def parsed_dir(self) -> Path:
+        """Typed Parquet, one file per landed file. Rebuildable from landing at any time."""
+        return self.data_dir / "parsed"
+
     def ensure_dirs(self) -> None:
         """Create local storage paths if they are missing."""
         self.landing_dir.mkdir(parents=True, exist_ok=True)
+        self.parsed_dir.mkdir(parents=True, exist_ok=True)
         self.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
 
 

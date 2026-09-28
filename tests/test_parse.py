@@ -8,20 +8,24 @@ acknowledgements, and the malformed cases that must fail loudly.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
 
+from pipeline.config import Settings
+from pipeline.extract import land
 from pipeline.parse import (
     PARQUET_SCHEMA,
     EntsoeAcknowledgementError,
     EntsoeParseError,
     PricePoint,
+    parse_landed_file,
     parse_prices,
     parse_resolution,
+    parsed_path,
     write_parquet,
 )
 
@@ -258,3 +262,54 @@ def test_write_parquet_empty_keeps_schema(tmp_path: Path) -> None:
     table = pq.read_table(target)
     assert table.num_rows == 0
     assert table.schema.equals(PARQUET_SCHEMA)
+
+
+# -------------------------------------------------------------- parsed zone
+
+MARKET_DAY = date(2026, 9, 24)
+
+
+def _parsed_files(settings: Settings) -> list[Path]:
+    return [p for p in settings.parsed_dir.rglob("*") if p.is_file()]
+
+
+def test_parsed_path_mirrors_landing_layout(settings: Settings) -> None:
+    path = parsed_path("prices", MARKET_DAY, settings)
+    assert path.is_relative_to(settings.parsed_dir)
+    assert path.parent.parts[-3:] == ("dataset=prices", "year=2026", "month=09")
+    assert path.name == "prices_2026-09-24.parquet"
+
+
+def test_parse_landed_file_writes_parquet(settings: Settings) -> None:
+    landed = land(FIXTURE.read_bytes(), "prices", MARKET_DAY, settings, suffix=".xml")
+    target, rows = parse_landed_file(landed, "prices", MARKET_DAY, settings)
+    assert rows == 192
+    assert target == parsed_path("prices", MARKET_DAY, settings)
+    assert pq.read_table(target).num_rows == 192
+
+
+def test_parse_never_modifies_the_landed_file(settings: Settings) -> None:
+    """The landing zone is the source of truth. Parsing only ever reads it."""
+    original = FIXTURE.read_bytes()
+    landed = land(original, "prices", MARKET_DAY, settings, suffix=".xml")
+    parse_landed_file(landed, "prices", MARKET_DAY, settings)
+    assert landed.read_bytes() == original
+
+
+def test_reparsing_replaces_rather_than_accumulates(settings: Settings) -> None:
+    landed = land(FIXTURE.read_bytes(), "prices", MARKET_DAY, settings, suffix=".xml")
+    for _ in range(3):
+        parse_landed_file(landed, "prices", MARKET_DAY, settings)
+    outputs = _parsed_files(settings)
+    assert len(outputs) == 1
+    assert pq.read_table(outputs[0]).num_rows == 192
+
+
+def test_failed_parse_writes_nothing(settings: Settings) -> None:
+    """Defence in depth: extract refuses to land acknowledgements, but if one
+    is ever on disk, parsing must fail without producing any output."""
+    bad = settings.landing_dir / "bad.xml"
+    bad.write_bytes(ACK)
+    with pytest.raises(EntsoeAcknowledgementError):
+        parse_landed_file(bad, "prices", MARKET_DAY, settings)
+    assert _parsed_files(settings) == []

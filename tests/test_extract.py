@@ -7,6 +7,7 @@ retryable vs permanent errors, and whether a rerun duplicates data.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
@@ -158,3 +159,46 @@ def test_live_entsoe_day_ahead_prices_parse() -> None:
     rows = parse_prices(body)
     assert len(rows) >= 96
     assert {r.bidding_zone for r in rows} == {zone}
+
+
+def test_landing_path_suffix_records_format(settings: Settings) -> None:
+    path = landing_path("prices", LOGICAL_DATE, settings, suffix=".xml")
+    assert path.name == "prices_2026-09-13.xml"
+
+
+ACK = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b"<Acknowledgement_MarketDocument"
+    b' xmlns="urn:iec62325.351:tc57wg16:451-1:acknowledgementdocument:7:0">'
+    b"<Reason><code>999</code><text>No matching data found</text></Reason>"
+    b"</Acknowledgement_MarketDocument>"
+)
+
+
+def _landed_files(settings: Settings) -> list[Path]:
+    return [p for p in settings.landing_dir.rglob("*") if p.is_file()]
+
+
+def test_land_refuses_an_acknowledgement(settings: Settings) -> None:
+    with pytest.raises(PermanentSourceError, match="Acknowledgement"):
+        land(ACK, "prices", LOGICAL_DATE, settings, suffix=".xml")
+    assert _landed_files(settings) == []
+
+
+def test_acknowledgement_cannot_overwrite_good_landed_data(settings: Settings) -> None:
+    """The failure this guard exists for: a rerun on a bad day must never
+    destroy the one raw copy of a good day."""
+    good = b"<Publication_MarketDocument>real data</Publication_MarketDocument>"
+    path = land(good, "prices", LOGICAL_DATE, settings, suffix=".xml")
+    with pytest.raises(PermanentSourceError):
+        land(ACK, "prices", LOGICAL_DATE, settings, suffix=".xml")
+    assert path.read_bytes() == good
+
+
+@respx.mock
+def test_extract_does_not_land_a_200_acknowledgement(settings: Settings) -> None:
+    """ENTSO-E can answer 'no data' with HTTP 200, so fetch() itself succeeds."""
+    respx.get("https://source.test/api").mock(return_value=httpx.Response(200, content=ACK))
+    with pytest.raises(PermanentSourceError):
+        extract_to_landing("", "prices", LOGICAL_DATE, settings=settings, suffix=".xml")
+    assert _landed_files(settings) == []
