@@ -1,10 +1,16 @@
-"""Load: landing zone -> warehouse raw schema.
+"""Load: files -> warehouse raw schema.
 
-Still no business logic. The only job here is to get bytes into queryable
+Still no business logic. The only job here is to get rows into queryable
 tables with lineage columns attached, so dbt has something to build on.
 
 Idempotency strategy: delete-then-insert scoped to the partition key. Rerunning
 a date replaces exactly that date and touches nothing else.
+
+The partition key is the run's logical date, and it is not the business key.
+ENTSO-E answers a UTC window with every market day that window overlaps, so
+consecutive runs deliver the same market day twice, under two logical dates.
+Raw keeps both deliveries on purpose, as a faithful log of what each run
+received. Staging deduplicates on (bidding_zone, interval_start_utc).
 """
 
 from __future__ import annotations
@@ -37,32 +43,31 @@ def warehouse(settings: Settings | None = None) -> Iterator[duckdb.DuckDBPyConne
         conn.close()
 
 
-def load_json_partition(
+def _replace_partition(
     conn: duckdb.DuckDBPyConnection,
+    reader: str,
     source_file: Path,
     table: str,
     logical_date: date,
 ) -> int:
-    """Load one JSON partition into raw.<table>, replacing any prior run.
+    """Replace one logical date's rows in raw.<table> with the rows of a file.
 
-    Returns the number of rows now present for that logical date.
+    ``reader`` is a DuckDB table function whose single parameter is the file
+    path, e.g. "read_parquet(?, hive_partitioning=false)". Returns the number
+    of rows now present for that logical date.
     """
     if not source_file.exists():
-        raise FileNotFoundError(f"landing file missing: {source_file}")
+        raise FileNotFoundError(f"source file missing: {source_file}")
 
     qualified = f"{RAW_SCHEMA}.{table}"
     ingested_at = datetime.now(UTC)
-
-    # read_json_auto infers the schema. In production you would pin an explicit
-    # columns={...} spec so an upstream schema change fails loudly here rather
-    # than silently reshaping downstream models.
-    staged = """
+    staged = f"""
         SELECT
             *,
             ?::DATE      AS _logical_date,
             ?::TIMESTAMP AS _ingested_at,
             ?            AS _source_file
-        FROM read_json_auto(?, hive_partitioning=false)
+        FROM {reader}
     """
     args = [logical_date, ingested_at, str(source_file), str(source_file)]
 
@@ -70,7 +75,11 @@ def load_json_partition(
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS {qualified} AS {staged} LIMIT 0", args)
         conn.execute(f"DELETE FROM {qualified} WHERE _logical_date = ?", [logical_date])
-        conn.execute(f"INSERT INTO {qualified} {staged}", args)
+        # BY NAME, never by position. Interval start and end are both
+        # timestamps, so a file that arrived with those columns reordered would
+        # swap them silently. By name, a reorder is harmless and an unknown
+        # column is a loud error.
+        conn.execute(f"INSERT INTO {qualified} BY NAME {staged}", args)
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -84,6 +93,40 @@ def load_json_partition(
 
     log.info("load.ok", table=qualified, logical_date=str(logical_date), rows=rows)
     return rows
+
+
+def load_json_partition(
+    conn: duckdb.DuckDBPyConnection,
+    source_file: Path,
+    table: str,
+    logical_date: date,
+) -> int:
+    """Load one landed JSON file into raw.<table>, replacing any prior run.
+
+    The demo path. read_json_auto infers the schema; in production you would
+    pin an explicit columns={...} spec so an upstream schema change fails
+    loudly here rather than silently reshaping downstream models.
+    """
+    return _replace_partition(
+        conn, "read_json_auto(?, hive_partitioning=false)", source_file, table, logical_date
+    )
+
+
+def load_parquet_partition(
+    conn: duckdb.DuckDBPyConnection,
+    source_file: Path,
+    table: str,
+    logical_date: date,
+) -> int:
+    """Load one parsed-zone Parquet file into raw.<table>, replacing any prior run.
+
+    The schema arrives pinned from parse.PARQUET_SCHEMA. hive_partitioning=false
+    for the same reason as the JSON path: the parsed zone uses dataset=/year=/
+    month= directories, which DuckDB would otherwise turn into three columns.
+    """
+    return _replace_partition(
+        conn, "read_parquet(?, hive_partitioning=false)", source_file, table, logical_date
+    )
 
 
 def row_count(conn: duckdb.DuckDBPyConnection, table: str) -> int:
