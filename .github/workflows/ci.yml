@@ -12,6 +12,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
+  GITLEAKS_VERSION: "8.23.3"
 
 jobs:
   quality:
@@ -25,9 +26,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
-      # A venv, not --system. Ubuntu's system Python is PEP 668
-      # externally-managed, so `uv pip install --system` is refused outright.
-      # Appending to GITHUB_PATH makes the venv active for later steps too.
+      # A venv, not --system: Ubuntu's system Python is PEP 668
+      # externally-managed, so installing into it is refused. Appending to
+      # GITHUB_PATH keeps the venv active for every later step in the job.
       - name: Create virtualenv
         run: |
           uv venv --python ${{ env.PYTHON_VERSION }}
@@ -49,12 +50,13 @@ jobs:
         run: pytest -m "not integration" --cov-report=xml
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: coverage
           path: coverage.xml
           retention-days: 7
+          if-no-files-found: ignore
 
   dags:
     name: Airflow DAGs import cleanly
@@ -72,8 +74,8 @@ jobs:
           uv venv --python ${{ env.PYTHON_VERSION }}
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
-      # Airflow pins its transitive deps hard, so it is installed against the
-      # official constraints file rather than alongside the analytics stack.
+      # Airflow pins its transitive dependencies hard, so it is installed
+      # against the official constraints file, separate from the analytics stack.
       - name: Install Airflow with constraints
         run: |
           AIRFLOW_VERSION=$(grep -oP 'AIRFLOW_VERSION:-\K[0-9.]+' docker-compose.yml || echo "3.0.2")
@@ -126,8 +128,7 @@ jobs:
         run: dbt parse
 
       # Seeds must load before models run. A source() has no DAG edge to a
-      # seed, so a single `dbt build` races and the staging model cannot find
-      # its table. Two steps, deterministic order.
+      # seed, so a single `dbt build` races. Two steps, deterministic order.
       - name: dbt seed
         working-directory: dbt
         run: dbt seed --target ci
@@ -142,7 +143,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # full history: a secret deleted later is still leaked
+
+      # The gitleaks binary rather than gitleaks-action. The action scans a
+      # push-event commit range, which breaks with "unknown revision" after a
+      # force-push rewrites history. Scanning the whole history directly is
+      # deterministic and identical to running it locally.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan full git history
+        run: gitleaks git . --redact --verbose --no-banner
