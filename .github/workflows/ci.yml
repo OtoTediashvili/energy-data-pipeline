@@ -135,7 +135,7 @@ jobs:
 
       - name: dbt build
         working-directory: dbt
-        run: dbt build --target ci --exclude "resource_type:seed"
+        run: dbt build --target ci --exclude day_ahead_prices_sample
 
   security:
     name: Secret scan
