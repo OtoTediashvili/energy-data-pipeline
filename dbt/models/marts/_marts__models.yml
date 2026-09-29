@@ -1,36 +1,67 @@
 version: 2
 
 models:
-  - name: dim_country
-    description: Country dimension with a surrogate key.
+  - name: dim_bidding_zone
+    description: One row per bidding zone in the data, named from the reference seed.
     columns:
-      - name: country_sk
+      - name: bidding_zone_sk
         description: Surrogate key.
         data_tests: [unique, not_null]
-      - name: country_code
+      - name: bidding_zone_eic
         data_tests: [unique, not_null]
+      - name: bidding_zone_name
+        data_tests: [not_null]
 
   - name: fct_daily_prices
-    description: "Daily price aggregates per country. Grain: one row per country per day."
+    description: "Day-ahead prices per bidding zone per market day. Grain: one row per zone per market day."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [bidding_zone_sk, market_date]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "covered_minutes in (1380, 1440, 1500)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "min_price_eur_mwh <= avg_price_eur_mwh and avg_price_eur_mwh <= max_price_eur_mwh"
     columns:
-      - name: country_sk
-        description: FK to dim_country.
+      - name: bidding_zone_sk
+        description: FK to dim_bidding_zone.
         data_tests:
           - not_null
           - relationships:
               arguments:
-                to: ref('dim_country')
-                field: country_sk
-      - name: observed_date
+                to: ref('dim_bidding_zone')
+                field: bidding_zone_sk
+      - name: market_date
         data_tests: [not_null]
-      - name: observation_count
-        description: Rows contributing to this aggregate. Zero would mean a bug.
-        data_tests:
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 1
-                inclusive: true
-    data_tests:
-      - dbt_utils.unique_combination_of_columns:
-          arguments:
-            combination_of_columns: [country_sk, observed_date]
+      - name: covered_minutes
+        description: >
+          Minutes of the market day that carry a price: 1440 normally, 1380 or
+          1500 on the days the clocks change. Anything else is a partial day.
+
+unit_tests:
+  - name: fct_rebuilds_the_revision_lookback_window
+    description: >
+      On an incremental run whose latest built day is 25 September, days from
+      18 September onward (7-day lookback) are rebuilt so late corrections
+      land. The 10th is outside the window and is left alone.
+    model: fct_daily_prices
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: this
+        format: sql
+        rows: |
+          select date '2026-09-25' as market_date
+      - input: ref('stg_day_ahead_prices')
+        rows:
+          - {bidding_zone: "10YNL----------L", market_date: "2026-09-10", price_eur_mwh: 50.0, resolution_minutes: 60}
+          - {bidding_zone: "10YNL----------L", market_date: "2026-09-20", price_eur_mwh: 60.0, resolution_minutes: 60}
+      - input: ref('dim_bidding_zone')
+        rows:
+          - {bidding_zone_sk: "nl", bidding_zone_eic: "10YNL----------L"}
+    expect:
+      rows:
+        - {bidding_zone_sk: "nl", market_date: "2026-09-20"}

@@ -1,25 +1,94 @@
 version: 2
 
 models:
-  - name: stg_prices
-    description: Cleaned, deduplicated price observations. One row per id per date.
-    columns:
-      - name: price_id
-        description: Unique identifier from the source.
-        data_tests: [not_null]
-      - name: country_code
-        description: ISO 3166-1 alpha-2 country code.
-        data_tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: ["GE", "DE", "FR", "IT", "ES", "PL"]
-      - name: price_eur_mwh
-        description: Price in EUR per MWh. Nullable, the source omits unpriced hours.
-      - name: observed_date
-        description: The date the observation belongs to.
-        data_tests: [not_null]
+  - name: stg_day_ahead_prices
+    description: >
+      One row per bidding zone per market time unit: the highest revision,
+      then the latest ingestion, of every delivery raw received.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
-            combination_of_columns: [price_id, observed_date]
+            combination_of_columns: [bidding_zone, interval_start_utc]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "interval_end_utc > interval_start_utc"
+    columns:
+      - name: bidding_zone
+        description: ENTSO-E EIC code of the bidding zone.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('bidding_zones')
+                field: bidding_zone_eic
+              config:
+                severity: warn
+      - name: interval_start_utc
+        data_tests: [not_null]
+      - name: interval_end_utc
+        data_tests: [not_null]
+      - name: market_date
+        description: Delivery day in market time (CET/CEST), which is how the auction defines a day.
+        data_tests: [not_null]
+      - name: resolution_minutes
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [15, 30, 60]
+                quote: false
+      - name: price_eur_mwh
+        data_tests: [not_null]
+      - name: currency
+        description: Guards the column names. Every price column promises EUR.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["EUR"]
+      - name: price_unit
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["MWH"]
+      - name: revision_number
+        data_tests: [not_null]
+
+unit_tests:
+  - name: stg_keeps_newest_revision_and_collapses_overlapping_deliveries
+    description: >
+      Three deliveries of one quarter-hour: revision 1 from Thursday's run, the
+      same revision again from Friday's overlapping run, and a corrected
+      revision 2. Exactly one row survives, carrying the corrected price.
+    model: stg_day_ahead_prices
+    given:
+      - input: source('raw', 'day_ahead_prices')
+        rows:
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 22:00:00+00", price_eur_mwh: 100.0, revision_number: 1, _ingested_at: "2026-09-24 03:00:00", _logical_date: "2026-09-24"}
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 22:00:00+00", price_eur_mwh: 100.0, revision_number: 1, _ingested_at: "2026-09-25 03:00:00", _logical_date: "2026-09-25"}
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 22:00:00+00", price_eur_mwh: 90.0, revision_number: 2, _ingested_at: "2026-09-25 03:00:00", _logical_date: "2026-09-25"}
+    expect:
+      rows:
+        - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 22:00:00+00", price_eur_mwh: 90.0, revision_number: 2}
+
+  - name: stg_assigns_market_days_in_cet_summer_and_winter
+    description: >
+      Market days follow Brussels wall-clock time. In September (CEST, UTC+2)
+      21:45 UTC is still the 24th and 22:00 UTC starts the 25th. In January
+      (CET, UTC+1) the boundary moves to 23:00 UTC. A fixed offset passes one
+      season and silently misassigns the other. Zones at the same instant stay
+      separate rows.
+    model: stg_day_ahead_prices
+    given:
+      - input: source('raw', 'day_ahead_prices')
+        rows:
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 21:45:00+00", revision_number: 1}
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 22:00:00+00", revision_number: 1}
+          - {bidding_zone: "10YBE----------2", interval_start_utc: "2026-09-24 22:00:00+00", revision_number: 1}
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-01-14 22:00:00+00", revision_number: 1}
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-01-14 23:00:00+00", revision_number: 1}
+    expect:
+      rows:
+        - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 21:45:00+00", market_date: "2026-09-24"}
+        - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-09-24 22:00:00+00", market_date: "2026-09-25"}
+        - {bidding_zone: "10YBE----------2", interval_start_utc: "2026-09-24 22:00:00+00", market_date: "2026-09-25"}
+        - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-01-14 22:00:00+00", market_date: "2026-01-14"}
+        - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-01-14 23:00:00+00", market_date: "2026-01-15"}

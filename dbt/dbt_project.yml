@@ -24,7 +24,34 @@ models:
 seeds:
   warehouse:
     +schema: raw
+    bidding_zones:
+      +column_types:
+        bidding_zone_eic: varchar
+        bidding_zone_name: varchar
+        country_code: varchar
+    day_ahead_prices_sample:
+      # Mirrors raw.day_ahead_prices exactly, so CI tests the real column types.
+      +column_types:
+        bidding_zone: varchar
+        interval_start_utc: timestamptz
+        interval_end_utc: timestamptz
+        resolution_minutes: integer
+        price_eur_mwh: double
+        currency: varchar
+        price_unit: varchar
+        position: integer
+        is_filled: boolean
+        document_mrid: varchar
+        revision_number: integer
+        document_created_utc: timestamptz
+        _logical_date: date
+        _ingested_at: timestamp
+        _source_file: varchar
 
 vars:
   # Overridden by Airflow so dbt and the loader agree on the partition.
   logical_date: "1970-01-01"
+  # The day-ahead auction defines days in Central European time, for every zone.
+  market_timezone: "Europe/Brussels"
+  # Incremental marts rebuild this many trailing days so late revisions land.
+  revision_lookback_days: 7
