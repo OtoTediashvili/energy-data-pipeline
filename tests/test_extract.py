@@ -6,6 +6,7 @@ retryable vs permanent errors, and whether a rerun duplicates data.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from pipeline.config import Settings
 from pipeline.extract import (
     TOKEN_PARAM,
     PermanentSourceError,
+    TransientSourceError,
     extract_to_landing,
     fetch,
     land,
@@ -80,6 +82,46 @@ def test_fetch_never_logs_the_token(settings: Settings) -> None:
         fetch(settings=settings, params={"documentType": "A44"})
     assert events, "expected fetch to emit log events"
     assert all("test-key" not in repr(event) for event in events)
+
+
+@respx.mock
+def test_no_library_log_line_carries_the_token(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The test above sees only our structured events. httpx writes through
+    standard logging, at INFO, with the full URL: query string and token. Under
+    Airflow that lands in task logs. Capture every logger, at every level."""
+    respx.get("https://source.test/api").mock(return_value=httpx.Response(200, content=b"<ok/>"))
+    with caplog.at_level(logging.DEBUG):
+        fetch(settings=settings, params={"documentType": "A44"})
+    assert "test-key" not in caplog.text
+
+
+@respx.mock
+def test_a_failed_request_cannot_leak_the_token_through_a_traceback(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Airflow 3 prints tracebacks with each frame's local variables, and inside
+    the HTTP call those locals hold the token. Run the real retry path to its
+    final re-raise, then walk every frame a renderer could reach, chained
+    exceptions included, and check every local."""
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)  # skip backoff waits
+    route = respx.get("https://source.test/api").mock(
+        side_effect=httpx.ConnectError("Connection refused")
+    )
+    with pytest.raises(TransientSourceError) as caught:
+        fetch(settings=settings)
+    assert route.call_count == 5, "a transport failure must still be retried"
+
+    exc: BaseException | None = caught.value
+    assert "Connection refused" in str(caught.value), "the cause must stay diagnosable"
+    while exc is not None:
+        frame = exc.__traceback__
+        while frame is not None:
+            for name, value in frame.tb_frame.f_locals.items():
+                assert "test-key" not in repr(value), f"token in local '{name}'"
+            frame = frame.tb_next
+        exc = exc.__cause__ or exc.__context__
 
 
 @respx.mock

@@ -10,6 +10,7 @@ Two rules that make backfills safe:
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -25,6 +26,12 @@ from pipeline.config import Settings, get_settings
 from pipeline.logging_config import get_logger
 
 log = get_logger(__name__)
+
+# httpx logs every request URL at INFO, query string included, and that string
+# carries the token. Keep the library's request log out of every environment;
+# fetch.start and fetch.ok already record each request, without the token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -70,8 +77,28 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise PermanentSourceError(f"status {response.status_code}: {response.text[:200]}")
 
 
+def _send(url: str, params: dict[str, str] | None, settings: Settings) -> httpx.Response:
+    """The only frame that ever holds the token.
+
+    It attaches the token to the outgoing request and nowhere else. If the call
+    fails, fetch() raises a fresh exception from outside this frame, so no
+    traceback can reach the local variables here or in httpx below.
+    """
+    query = dict(params or {})
+    token = settings.source_api_key.get_secret_value()
+    if token:
+        query[TOKEN_PARAM] = token
+    with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+        return client.get(url, params=query)
+
+
+def _redact(text: str, settings: Settings) -> str:
+    token = settings.source_api_key.get_secret_value()
+    return text.replace(token, "***") if token else text
+
+
 @retry(
-    retry=retry_if_exception_type((TransientSourceError, httpx.TransportError)),
+    retry=retry_if_exception_type(TransientSourceError),
     wait=wait_exponential(multiplier=1, min=2, max=60),
     stop=stop_after_attempt(5),
     reraise=True,
@@ -89,19 +116,24 @@ def fetch(
     ENTSO-E exposes a single endpoint, so ``endpoint`` defaults to empty and the
     base URL is called as-is. The token rides as a query parameter on the
     outgoing request only: ``params`` is what gets logged, and it never holds it.
+
+    Airflow prints tracebacks with every frame's local variables, and the frames
+    inside the HTTP call hold the token. So a transport failure is replaced by a
+    fresh exception raised outside the except block: the original, whose
+    traceback reaches those frames, is discarded rather than chained.
     """
     cfg = settings or get_settings()
     base = cfg.source_base_url.rstrip("/")
     url = f"{base}/{endpoint.lstrip('/')}" if endpoint else base
 
-    query = dict(params or {})
-    token = cfg.source_api_key.get_secret_value()
-    if token:
-        query[TOKEN_PARAM] = token
-
     log.info("fetch.start", url=url, params=params)
-    with httpx.Client(timeout=cfg.request_timeout_seconds) as client:
-        response = client.get(url, params=query)
+    failure: str | None = None
+    try:
+        response = _send(url, params, cfg)
+    except httpx.TransportError as exc:
+        failure = _redact(f"{type(exc).__name__}: {exc}", cfg)
+    if failure is not None:
+        raise TransientSourceError(f"transport error calling {url}: {failure}")
 
     _raise_for_status(response)
     log.info("fetch.ok", url=url, bytes=len(response.content))
