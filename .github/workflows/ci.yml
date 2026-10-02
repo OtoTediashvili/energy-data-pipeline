@@ -78,7 +78,16 @@ jobs:
       # against the official constraints file, separate from the analytics stack.
       - name: Install Airflow with constraints
         run: |
-          AIRFLOW_VERSION=$(grep -oP 'AIRFLOW_VERSION:-\K[0-9.]+' docker-compose.yml || echo "3.0.2")
+          # CI must test the Airflow version the image builds. That version is
+          # written in docker-compose.yml and the Dockerfile, so require every
+          # occurrence to agree and fail loudly if they drift, instead of
+          # quietly testing whichever one a grep happens to find.
+          VERSIONS=$(grep -ohP '(AIRFLOW_VERSION:-|ARG AIRFLOW_VERSION=)\K[0-9.]+' docker-compose.yml Dockerfile | sort -u)
+          if [ -z "$VERSIONS" ] || [ "$(printf '%s\n' "$VERSIONS" | wc -l)" -ne 1 ]; then
+            echo "::error::Airflow version differs across docker-compose.yml and Dockerfile: $(echo $VERSIONS)"
+            exit 1
+          fi
+          AIRFLOW_VERSION="$VERSIONS"
           CONSTRAINT="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${{ env.PYTHON_VERSION }}.txt"
           uv pip install "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT}"
           uv pip install -e .
