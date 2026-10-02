@@ -29,20 +29,22 @@ check: lint typecheck test ## Everything CI runs
 dbt-deps: ## Install dbt packages
 	. .venv/bin/activate && cd dbt && dbt deps
 
-dbt-build: ## Run dbt models and tests
-	. .venv/bin/activate && cd dbt && dbt seed && dbt build --exclude "resource_type:seed"
+dbt-build: ## Run dbt models and tests against the local warehouse
+	. .venv/bin/activate && cd dbt && dbt build
 
 dbt-docs: ## Generate and serve dbt docs
 	. .venv/bin/activate && cd dbt && dbt docs generate && dbt docs serve
 
-up: ## Start Airflow locally
-	mkdir -p logs
-	# Docker creates a fresh bind-mounted ./logs as root; the containers run
-	# as AIRFLOW_UID and can't write into it without this. Fixed from inside
-	# a container so it works without host sudo.
-	docker compose run --rm --no-deps --entrypoint chown -u root airflow-init -R 50000:0 /opt/airflow/logs
-	docker compose up -d
-	@echo "Airflow: http://localhost:8080 (admin / admin)"
+up: ## Start Airflow locally (builds the image on first run)
+	mkdir -p logs data
+	# Containers run as you (AIRFLOW_UID = your user id, the official guidance
+	# on Linux), so everything they write under ./data and ./logs stays yours to
+	# edit and delete. The chown repairs directories an earlier setup left owned
+	# by another user, and runs inside a container so no sudo is needed.
+	AIRFLOW_UID=$$(id -u) docker compose build
+	AIRFLOW_UID=$$(id -u) docker compose run --rm --no-deps --entrypoint chown -u root airflow-init -R $$(id -u):0 /opt/airflow/logs /opt/airflow/data
+	AIRFLOW_UID=$$(id -u) docker compose up -d
+	@echo "Airflow: http://localhost:8081 (admin / admin)"
 
 down: ## Stop Airflow
 	docker compose down

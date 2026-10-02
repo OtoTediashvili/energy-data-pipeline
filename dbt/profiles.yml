@@ -15,6 +15,8 @@ warehouse:
 
     prod:
       type: duckdb
-      path: "/opt/airflow/data/warehouse/warehouse.duckdb"
+      # The variable the Python loader reads, so dbt and the pipeline can never
+      # point at different files.
+      path: "{{ env_var('PIPELINE_DUCKDB_PATH', '/opt/airflow/data/warehouse/warehouse.duckdb') }}"
       schema: main
       threads: 4

@@ -1,0 +1,4 @@
+# The image needs only pyproject.toml; code is bind-mounted at runtime.
+# Excluding everything else keeps the build context tiny: no .venv, no data.
+*
+!pyproject.toml

@@ -11,8 +11,6 @@ dependencies = [
     "structlog>=24.1",
     "duckdb>=1.0",
     "pyarrow>=16.0",
-    "polars>=1.0",
-    "pandas>=2.2",
     "defusedxml>=0.7",
 ]
 
@@ -25,6 +23,8 @@ dev = [
     "pre-commit>=3.8",
     "respx>=0.21",
     "types-defusedxml>=0.7",
+    # For interactive .df() queries only; the pipeline never imports it.
+    "pandas>=2.2",
 ]
 dbt = [
     "dbt-core>=1.8",
@@ -72,7 +72,7 @@ warn_unreachable = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["duckdb.*", "polars.*", "airflow.*", "pyarrow.*"]
+module = ["duckdb.*", "airflow.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

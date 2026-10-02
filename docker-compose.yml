@@ -4,11 +4,17 @@
 # no Flower. LocalExecutor handles far more than a portfolio project needs and
 # removes two moving parts. Swap to CeleryExecutor only if you have a reason.
 #
-#   make up     -> http://localhost:8080  (admin / admin)
+#   make up     -> http://localhost:8081  (admin / admin); builds the image first
 #   make down
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:${AIRFLOW_VERSION:-3.0.2}-python3.12
+  # Airflow plus the pipeline's dependencies and a separate dbt virtualenv.
+  # See Dockerfile. Every Airflow service shares this one image.
+  build:
+    context: .
+    args:
+      AIRFLOW_VERSION: ${AIRFLOW_VERSION:-3.0.2}
+  image: energy-pipeline-airflow:${AIRFLOW_VERSION:-3.0.2}
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -23,8 +29,12 @@ x-airflow-common: &airflow-common
     PIPELINE_LOG_JSON: "true"
     PIPELINE_DATA_DIR: /opt/airflow/data
     PIPELINE_DUCKDB_PATH: /opt/airflow/data/warehouse/warehouse.duckdb
-    PIPELINE_SOURCE_BASE_URL: ${PIPELINE_SOURCE_BASE_URL:-https://example.com/api}
+    PIPELINE_SOURCE_BASE_URL: ${PIPELINE_SOURCE_BASE_URL:-https://web-api.tp.entsoe.eu/api}
     PIPELINE_SOURCE_API_KEY: ${PIPELINE_SOURCE_API_KEY:-}
+    # dbt runs from its own virtualenv inside the image; the DAG reads these.
+    DBT_BIN: /opt/dbt-venv/bin/dbt
+    DBT_PROJECT_DIR: /opt/airflow/dbt
+    DBT_TARGET: prod
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src
