@@ -70,17 +70,19 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    entrypoint: /bin/bash
-    command:
-      - -c
-      # Only the database migration. Airflow 3 has no `airflow users` command;
-      # the API server creates the admin user and its password itself (see
-      # AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE above).
-      - airflow db migrate
+    # Through the image's own entrypoint, never around it. The containers run as
+    # your user id, which the image's /etc/passwd doesn't know, and Airflow
+    # refuses to run as a user with no name. The entrypoint registers the id,
+    # waits for the database, then runs `airflow db migrate`.
+    # (Airflow 3 has no `airflow users` command: the API server creates the
+    # admin user and password itself; see the passwords file setting above.)
+    command: db migrate
     depends_on:
       postgres:
         condition: service_healthy
-    restart: on-failure
+    # A one-shot job: if it fails, stop and say so. With on-failure, Docker
+    # retried it forever and `make up` waited forever behind it.
+    restart: "no"
 
   airflow-apiserver:
     <<: *airflow-common
