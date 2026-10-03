@@ -22,6 +22,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-local-dev-secret-change-me}
+    # Airflow 3 tasks report to the API server over HTTP. Left unset, the address
+    # defaults to localhost:8080, which inside the scheduler container is the
+    # scheduler itself, so every task failed before it could start. Airflow's
+    # own compose file sets the same value.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
     # Make src/ importable inside the containers
     PYTHONPATH: /opt/airflow/src
