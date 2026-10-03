@@ -52,3 +52,6 @@ standalone_admin_password.txt
 .idea/
 .DS_Store
 CLAUDE.md
+
+# Airflow's generated admin password (make password)
+config/simple_auth_manager_passwords.json

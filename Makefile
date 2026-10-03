@@ -36,15 +36,19 @@ dbt-docs: ## Generate and serve dbt docs
 	. .venv/bin/activate && cd dbt && dbt docs generate && dbt docs serve
 
 up: ## Start Airflow locally (builds the image on first run)
-	mkdir -p logs data
+	mkdir -p logs data config
 	# Containers run as you (AIRFLOW_UID = your user id, the official guidance
 	# on Linux), so everything they write under ./data and ./logs stays yours to
 	# edit and delete. The chown repairs directories an earlier setup left owned
 	# by another user, and runs inside a container so no sudo is needed.
 	AIRFLOW_UID=$$(id -u) docker compose build
-	AIRFLOW_UID=$$(id -u) docker compose run --rm --no-deps --entrypoint chown -u root airflow-init -R $$(id -u):0 /opt/airflow/logs /opt/airflow/data
+	AIRFLOW_UID=$$(id -u) docker compose run --rm --no-deps --entrypoint chown -u root airflow-init -R $$(id -u):0 /opt/airflow/logs /opt/airflow/data /opt/airflow/config
 	AIRFLOW_UID=$$(id -u) docker compose up -d
-	@echo "Airflow: http://localhost:8081 (admin / admin)"
+	@echo "Airflow: http://localhost:8081  user: admin  password: make password"
+
+password: ## Print the Airflow admin password (generated on first start)
+	@python3 -c "import json; print(json.load(open('config/simple_auth_manager_passwords.json'))['admin'])" 2>/dev/null \
+		|| echo "No password yet: run make up and give the API server a minute to start."
 
 down: ## Stop Airflow
 	docker compose down
@@ -59,4 +63,4 @@ clean: ## Remove generated artefacts
 reset-data: ## Wipe local landing zone and warehouse
 	rm -rf data/landing/* data/warehouse/*
 
-.PHONY: help install fmt lint typecheck test test-all check dbt-deps dbt-build dbt-docs up down logs clean reset-data
+.PHONY: help install fmt lint typecheck test test-all check dbt-deps dbt-build dbt-docs up password down logs clean reset-data

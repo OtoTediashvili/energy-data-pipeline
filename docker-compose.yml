@@ -4,7 +4,8 @@
 # no Flower. LocalExecutor handles far more than a portfolio project needs and
 # removes two moving parts. Swap to CeleryExecutor only if you have a reason.
 #
-#   make up     -> http://localhost:8081  (admin / admin); builds the image first
+#   make up        -> http://localhost:8081, user admin; builds the image first
+#   make password  -> the admin password
 #   make down
 
 x-airflow-common: &airflow-common
@@ -25,6 +26,10 @@ x-airflow-common: &airflow-common
     # Make src/ importable inside the containers
     PYTHONPATH: /opt/airflow/src
     # Pipeline settings, read by pipeline.config.Settings
+    # Airflow 3's SimpleAuthManager generates the admin password on first start
+    # and reuses it from this file afterwards. Kept in the mounted, gitignored
+    # config/ folder so it survives `make down` and you can read it from the host.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/config/simple_auth_manager_passwords.json
     PIPELINE_ENV: local
     PIPELINE_LOG_JSON: "true"
     PIPELINE_DATA_DIR: /opt/airflow/data
@@ -41,6 +46,7 @@ x-airflow-common: &airflow-common
     - ./dbt:/opt/airflow/dbt
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
@@ -67,12 +73,10 @@ services:
     entrypoint: /bin/bash
     command:
       - -c
-      - |
-        airflow db migrate
-        airflow users create \
-          --username admin --password admin \
-          --firstname Local --lastname Dev \
-          --role Admin --email admin@localhost || true
+      # Only the database migration. Airflow 3 has no `airflow users` command;
+      # the API server creates the admin user and its password itself (see
+      # AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE above).
+      - airflow db migrate
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,7 +86,8 @@ services:
     <<: *airflow-common
     command: api-server
     ports:
-      - "${AIRFLOW_PORT:-8081}:8080"
+      # Localhost only: the UI and API must not be reachable from your network.
+      - "127.0.0.1:${AIRFLOW_PORT:-8081}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s
