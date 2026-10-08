@@ -203,6 +203,12 @@ def test_live_entsoe_day_ahead_prices_parse() -> None:
     assert {r.bidding_zone for r in rows} == {zone}
 
 
+def test_landing_path_with_a_zone(settings: Settings) -> None:
+    path = landing_path("prices", LOGICAL_DATE, settings, suffix=".xml", zone="NL")
+    assert path.parent.parts[-4:] == ("dataset=prices", "zone=NL", "year=2026", "month=09")
+    assert path.name == "prices_NL_2026-09-13.xml"
+
+
 def test_landing_path_suffix_records_format(settings: Settings) -> None:
     path = landing_path("prices", LOGICAL_DATE, settings, suffix=".xml")
     assert path.name == "prices_2026-09-13.xml"

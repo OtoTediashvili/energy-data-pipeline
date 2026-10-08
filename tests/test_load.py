@@ -193,18 +193,22 @@ def test_a_reordered_file_cannot_swap_columns(settings: Settings, tmp_path: Path
     assert inverted == (0,)
 
 
-def test_a_failed_load_leaves_the_previous_data_intact(settings: Settings, tmp_path: Path) -> None:
-    """Delete and insert share one transaction. When the insert fails after the
-    delete has already run, the delete is rolled back with it, so a bad file
-    can never leave a date empty."""
+def test_a_failed_load_leaves_the_previous_data_intact(settings: Settings) -> None:
+    """Delete and insert share one transaction. When a delivery's file is
+    replaced by a broken one, the reload deletes the old rows and then fails to
+    insert; the rollback must restore them, so a bad file never empties a delivery.
+
+    The broken file sits at the same path as the original on purpose. Deletes
+    are scoped to one delivery, so a broken file anywhere else would delete
+    nothing, and this test would pass even with the transaction removed.
+    """
     original = _parsed(settings, DAY_ONE)
     table = pq.read_table(original)
-    broken = tmp_path / "unexpected_column.parquet"
-    pq.write_table(table.append_column("surprise", pa.array([1] * table.num_rows)), broken)
     with warehouse(settings) as conn:
-        load_parquet_partition(conn, original, TABLE, DAY_ONE)
+        load_parquet_partition(conn, original, TABLE, DAY_ONE, settings)
+        pq.write_table(table.append_column("surprise", pa.array([1] * table.num_rows)), original)
         with pytest.raises(duckdb.Error):
-            load_parquet_partition(conn, broken, TABLE, DAY_ONE)
+            load_parquet_partition(conn, original, TABLE, DAY_ONE, settings)
         assert row_count(conn, TABLE) == 192
 
 
@@ -228,3 +232,54 @@ def test_raw_keeps_every_delivery_of_an_interval(settings: Settings) -> None:
 
         load_parquet_partition(conn, _parsed(settings, DAY_ONE), TABLE, DAY_ONE)
         assert row_count(conn, TABLE) == 384
+
+
+# ------------------------------------------------------------ several zones
+
+
+def _parsed_for_zone(settings: Settings, logical_date: date, zone: str, eic: str) -> Path:
+    """The real fixture relabelled as another bidding zone, landed and parsed."""
+    xml = FIXTURE.read_bytes().replace(b"10YNL----------L", eic.encode())
+    landed = land(xml, "prices", logical_date, settings, suffix=".xml", zone=zone)
+    target, _ = parse_landed_file(
+        landed, "prices", logical_date, settings, zone=zone, expected_bidding_zone=eic
+    )
+    return target
+
+
+def test_two_zones_on_the_same_day_keep_each_others_rows(settings: Settings) -> None:
+    """The bug this layout fixes: with deletes scoped to the date, the second
+    zone's load wiped the first zone's rows for that day."""
+    nl = _parsed_for_zone(settings, DAY_ONE, "NL", "10YNL----------L")
+    be = _parsed_for_zone(settings, DAY_ONE, "BE", "10YBE----------2")
+    with warehouse(settings) as conn:
+        load_parquet_partition(conn, nl, TABLE, DAY_ONE, settings)
+        load_parquet_partition(conn, be, TABLE, DAY_ONE, settings)
+        zones = conn.execute(
+            f"SELECT bidding_zone, count(*) FROM {RAW_SCHEMA}.{TABLE} GROUP BY 1 ORDER BY 1"
+        ).fetchall()
+    assert zones == [("10YBE----------2", 192), ("10YNL----------L", 192)]
+
+
+def test_delivery_key_is_relative_to_the_data_directory(settings: Settings) -> None:
+    source = _parsed_for_zone(settings, DAY_ONE, "NL", "10YNL----------L")
+    with warehouse(settings) as conn:
+        load_parquet_partition(conn, source, TABLE, DAY_ONE, settings)
+        keys = conn.execute(f"SELECT DISTINCT _source_file FROM {RAW_SCHEMA}.{TABLE}").fetchall()
+    assert keys == [
+        ("parsed/dataset=prices/zone=NL/year=2026/month=09/prices_NL_2026-09-13.parquet",)
+    ]
+
+
+def test_the_same_delivery_from_another_environment_replaces_it(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Airflow loads /opt/airflow/data/...; your terminal loads data/... . Both
+    are one delivery, so the second load must replace the first, not add to it."""
+    source = _parsed_for_zone(settings, DAY_ONE, "NL", "10YNL----------L")
+    monkeypatch.chdir(tmp_path)
+    as_seen_from_the_host = source.relative_to(tmp_path)
+    with warehouse(settings) as conn:
+        load_parquet_partition(conn, source.resolve(), TABLE, DAY_ONE, settings)
+        load_parquet_partition(conn, as_seen_from_the_host, TABLE, DAY_ONE, settings)
+        assert row_count(conn, TABLE) == 192

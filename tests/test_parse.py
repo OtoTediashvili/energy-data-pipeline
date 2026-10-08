@@ -313,3 +313,28 @@ def test_failed_parse_writes_nothing(settings: Settings) -> None:
     with pytest.raises(EntsoeAcknowledgementError):
         parse_landed_file(bad, "prices", MARKET_DAY, settings)
     assert _parsed_files(settings) == []
+
+
+def test_parse_rejects_a_file_from_the_wrong_zone(settings: Settings) -> None:
+    """A delivery stored under zone=BE must contain Belgian prices. A mapping
+    mistake that fetched another zone fails here, before anything is written."""
+    landed = land(FIXTURE.read_bytes(), "prices", MARKET_DAY, settings, suffix=".xml", zone="BE")
+    with pytest.raises(EntsoeParseError, match="expected bidding zone"):
+        parse_landed_file(
+            landed,
+            "prices",
+            MARKET_DAY,
+            settings,
+            zone="BE",
+            expected_bidding_zone="10YBE----------2",
+        )
+    assert _parsed_files(settings) == []
+
+
+def test_parse_with_the_right_zone_writes_into_its_partition(settings: Settings) -> None:
+    landed = land(FIXTURE.read_bytes(), "prices", MARKET_DAY, settings, suffix=".xml", zone="NL")
+    target, rows = parse_landed_file(
+        landed, "prices", MARKET_DAY, settings, zone="NL", expected_bidding_zone=NL
+    )
+    assert rows == 192
+    assert target.parent.parts[-4:] == ("dataset=prices", "zone=NL", "year=2026", "month=09")

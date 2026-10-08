@@ -24,6 +24,7 @@ from tenacity import (
 
 from pipeline.config import Settings, get_settings
 from pipeline.logging_config import get_logger
+from pipeline.zones import partition_path
 
 log = get_logger(__name__)
 
@@ -53,21 +54,18 @@ def landing_path(
     logical_date: date,
     settings: Settings | None = None,
     suffix: str = ".json",
+    zone: str | None = None,
 ) -> Path:
     """Return the deterministic landing location for one dataset partition.
 
     Hive-style partitioning so that DuckDB, Spark and Athena can all read the
     tree without an external catalogue. ``suffix`` records the source format
-    (".xml" for ENTSO-E), so a landed file says what it contains.
+    (".xml" for ENTSO-E), so a landed file says what it contains. ``zone``
+    adds a zone=<key> partition, so two bidding zones fetched for the same day
+    land in two files rather than overwriting one.
     """
     cfg = settings or get_settings()
-    return (
-        cfg.landing_dir
-        / f"dataset={dataset}"
-        / f"year={logical_date.year:04d}"
-        / f"month={logical_date.month:02d}"
-        / f"{dataset}_{logical_date.isoformat()}{suffix}"
-    )
+    return partition_path(cfg.landing_dir, dataset, logical_date, suffix, zone)
 
 
 def _raise_for_status(response: httpx.Response) -> None:
@@ -163,11 +161,12 @@ def land(
     logical_date: date,
     settings: Settings | None = None,
     suffix: str = ".json",
+    zone: str | None = None,
 ) -> Path:
     """Write a payload to its deterministic landing path and return it."""
     cfg = settings or get_settings()
     _reject_acknowledgement(payload)
-    target = landing_path(dataset, logical_date, cfg, suffix)
+    target = landing_path(dataset, logical_date, cfg, suffix, zone)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     # Write to a temp file then rename: a crash mid-write never leaves a
@@ -187,7 +186,8 @@ def extract_to_landing(
     params: dict[str, str] | None = None,
     settings: Settings | None = None,
     suffix: str = ".json",
+    zone: str | None = None,
 ) -> Path:
-    """Fetch one interval and land it. Safe to rerun for the same date."""
+    """Fetch one interval and land it. Safe to rerun for the same date and zone."""
     payload = fetch(endpoint, params=params, settings=settings)
-    return land(payload, dataset, logical_date, settings=settings, suffix=suffix)
+    return land(payload, dataset, logical_date, settings=settings, suffix=suffix, zone=zone)

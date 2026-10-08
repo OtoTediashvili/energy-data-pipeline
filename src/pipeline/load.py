@@ -3,8 +3,9 @@
 Still no business logic. The only job here is to get rows into queryable
 tables with lineage columns attached, so dbt has something to build on.
 
-Idempotency strategy: delete-then-insert scoped to the partition key. Rerunning
-a date replaces exactly that date and touches nothing else.
+Idempotency strategy: delete-then-insert scoped to one delivery, meaning the
+file it came from. Rerunning a zone and date replaces exactly that delivery;
+another zone's delivery for the same day is never touched.
 
 The partition key is the run's logical date, and it is not the business key.
 ENTSO-E answers a UTC window with every market day that window overlaps, so
@@ -30,6 +31,22 @@ log = get_logger(__name__)
 RAW_SCHEMA = "raw"
 
 
+def delivery_key(source_file: Path, settings: Settings) -> str:
+    """Identify a delivery by its file, relative to the data directory.
+
+    Relative, so the key is identical whether the file was loaded from the host
+    (data/parsed/...) or inside Airflow (/opt/airflow/data/parsed/...). Keyed
+    on the absolute path, a rerun from the other environment would add rows
+    instead of replacing them. Files outside the data directory, such as test
+    fixtures, fall back to their absolute path.
+    """
+    resolved = source_file.resolve()
+    try:
+        return resolved.relative_to(settings.data_dir.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 @contextmanager
 def warehouse(settings: Settings | None = None) -> Iterator[duckdb.DuckDBPyConnection]:
     """Open a DuckDB connection, guaranteeing it is closed."""
@@ -49,16 +66,18 @@ def _replace_partition(
     source_file: Path,
     table: str,
     logical_date: date,
+    settings: Settings | None = None,
 ) -> int:
-    """Replace one logical date's rows in raw.<table> with the rows of a file.
+    """Replace one delivery's rows in raw.<table> with the rows of its file.
 
     ``reader`` is a DuckDB table function whose single parameter is the file
     path, e.g. "read_parquet(?, hive_partitioning=false)". Returns the number
-    of rows now present for that logical date.
+    of rows now present for this delivery.
     """
     if not source_file.exists():
         raise FileNotFoundError(f"source file missing: {source_file}")
 
+    key = delivery_key(source_file, settings or get_settings())
     qualified = f"{RAW_SCHEMA}.{table}"
     ingested_at = datetime.now(UTC)
     staged = f"""
@@ -69,12 +88,14 @@ def _replace_partition(
             ?            AS _source_file
         FROM {reader}
     """
-    args = [logical_date, ingested_at, str(source_file), str(source_file)]
+    args = [logical_date, ingested_at, key, str(source_file)]
 
     conn.execute("BEGIN TRANSACTION")
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS {qualified} AS {staged} LIMIT 0", args)
-        conn.execute(f"DELETE FROM {qualified} WHERE _logical_date = ?", [logical_date])
+        # One delivery, not one date: two zones loading the same day must
+        # never delete each other's rows.
+        conn.execute(f"DELETE FROM {qualified} WHERE _source_file = ?", [key])
         # BY NAME, never by position. Interval start and end are both
         # timestamps, so a file that arrived with those columns reordered would
         # swap them silently. By name, a reorder is harmless and an unknown
@@ -87,7 +108,7 @@ def _replace_partition(
         raise
 
     result = conn.execute(
-        f"SELECT count(*) FROM {qualified} WHERE _logical_date = ?", [logical_date]
+        f"SELECT count(*) FROM {qualified} WHERE _source_file = ?", [key]
     ).fetchone()
     rows = int(result[0]) if result else 0
 
@@ -100,6 +121,7 @@ def load_json_partition(
     source_file: Path,
     table: str,
     logical_date: date,
+    settings: Settings | None = None,
 ) -> int:
     """Load one landed JSON file into raw.<table>, replacing any prior run.
 
@@ -108,7 +130,12 @@ def load_json_partition(
     loudly here rather than silently reshaping downstream models.
     """
     return _replace_partition(
-        conn, "read_json_auto(?, hive_partitioning=false)", source_file, table, logical_date
+        conn,
+        "read_json_auto(?, hive_partitioning=false)",
+        source_file,
+        table,
+        logical_date,
+        settings,
     )
 
 
@@ -117,6 +144,7 @@ def load_parquet_partition(
     source_file: Path,
     table: str,
     logical_date: date,
+    settings: Settings | None = None,
 ) -> int:
     """Load one parsed-zone Parquet file into raw.<table>, replacing any prior run.
 
@@ -125,7 +153,7 @@ def load_parquet_partition(
     month= directories, which DuckDB would otherwise turn into three columns.
     """
     return _replace_partition(
-        conn, "read_parquet(?, hive_partitioning=false)", source_file, table, logical_date
+        conn, "read_parquet(?, hive_partitioning=false)", source_file, table, logical_date, settings
     )
 
 

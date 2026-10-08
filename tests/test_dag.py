@@ -7,6 +7,7 @@ CI's DAG job runs it with Airflow present.
 
 from __future__ import annotations
 
+import csv
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ pytest.importorskip("airflow")
 from airflow.models import DagBag
 
 DAGS = Path(__file__).parent.parent / "dags"
+ZONES_SEED = Path(__file__).parent.parent / "dbt" / "seeds" / "bidding_zones.csv"
 PIPELINE = ["extract", "parse", "load", "validate", "transform"]
 
 
@@ -51,3 +53,18 @@ def test_runs_after_the_auction_publishes(dag: Any) -> None:
 
 def test_every_task_retries(dag: Any) -> None:
     assert all(task.retries >= 1 for task in dag.tasks)
+
+
+def test_fans_out_one_task_per_zone_in_the_seed(dag: Any) -> None:
+    """The zone list is the dbt reference seed. Adding a bidding zone is one
+    row there; the DAG must pick it up without any code change."""
+    with ZONES_SEED.open(newline="") as handle:
+        seed_zones = sorted(row["country_code"] for row in csv.DictReader(handle))
+    for task_id in ("extract", "parse", "load"):
+        assert dag.get_task(task_id).is_mapped, f"{task_id} should fan out per zone"
+    assert sorted(dag.get_task("extract").op_kwargs_expand_input.value["zone"]) == seed_zones
+
+
+def test_warehouse_writes_are_serialised(dag: Any) -> None:
+    """DuckDB allows one writer. Parallel loads locked each other out."""
+    assert dag.get_task("load").max_active_tis_per_dag == 1

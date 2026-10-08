@@ -37,6 +37,7 @@ from defusedxml import ElementTree as SafeET
 
 from pipeline.config import Settings, get_settings
 from pipeline.logging_config import get_logger
+from pipeline.zones import partition_path
 
 log = get_logger(__name__)
 
@@ -261,20 +262,16 @@ def write_parquet(rows: list[PricePoint], target: Path) -> Path:
 # -------------------------------------------------------------- parsed zone
 
 
-def parsed_path(dataset: str, logical_date: date, settings: Settings | None = None) -> Path:
+def parsed_path(
+    dataset: str, logical_date: date, settings: Settings | None = None, zone: str | None = None
+) -> Path:
     """Deterministic parsed-zone location, mirroring the landing layout 1:1.
 
-    One landed file maps to exactly one Parquet file, so reparsing a date
-    replaces its output and never accumulates duplicates.
+    One landed file maps to exactly one Parquet file, so reparsing a date and
+    zone replaces its output and never accumulates duplicates.
     """
     cfg = settings or get_settings()
-    return (
-        cfg.parsed_dir
-        / f"dataset={dataset}"
-        / f"year={logical_date.year:04d}"
-        / f"month={logical_date.month:02d}"
-        / f"{dataset}_{logical_date.isoformat()}.parquet"
-    )
+    return partition_path(cfg.parsed_dir, dataset, logical_date, ".parquet", zone)
 
 
 def parse_landed_file(
@@ -282,14 +279,25 @@ def parse_landed_file(
     dataset: str,
     logical_date: date,
     settings: Settings | None = None,
+    zone: str | None = None,
+    expected_bidding_zone: str | None = None,
 ) -> tuple[Path, int]:
     """Parse one landed file into its parsed-zone Parquet. Returns (path, rows).
 
     Only ever reads the landed file. Parsing completes before anything is
     written, so a document that fails to parse writes nothing, and any earlier
     output for that date is left exactly as it was.
+
+    ``expected_bidding_zone`` (an EIC code) guards the zone mapping: a file
+    stored under zone=BE must contain Belgian prices, never another zone's.
     """
     rows = parse_prices(landed.read_bytes())
-    target = write_parquet(rows, parsed_path(dataset, logical_date, settings))
+    if expected_bidding_zone is not None:
+        found = {row.bidding_zone for row in rows}
+        if found - {expected_bidding_zone}:
+            raise EntsoeParseError(
+                f"{landed.name}: expected bidding zone {expected_bidding_zone}, found {sorted(found)}"
+            )
+    target = write_parquet(rows, parsed_path(dataset, logical_date, settings, zone))
     log.info("parse.ok", source=str(landed), target=str(target), rows=len(rows))
     return target, len(rows)
