@@ -41,11 +41,14 @@ models:
           1500 on the days the clocks change. Anything else is a partial day.
 
 unit_tests:
-  - name: fct_rebuilds_the_revision_lookback_window
+  - name: fct_rebuilds_every_day_that_received_data_since_the_last_build
     description: >
-      On an incremental run whose latest built day is 25 September, days from
-      18 September onward (7-day lookback) are rebuilt so late corrections
-      land. The 10th is outside the window and is left alone.
+      The table was last built from data ingested up to 25 September 13:00.
+      Since then a backfill delivered 1 October 2025, a year older than
+      anything built here, and a correction arrived for one hour of
+      20 September in the Netherlands. Both days are rebuilt, the corrected
+      one from all of its intervals, not only the new one. 24 September and
+      Belgium's 20 September received nothing new and are left alone.
     model: fct_daily_prices
     overrides:
       macros:
@@ -54,14 +57,19 @@ unit_tests:
       - input: this
         format: sql
         rows: |
-          select date '2026-09-25' as market_date
+          select timestamp '2026-09-25 13:00:00' as last_ingested_at
       - input: ref('stg_day_ahead_prices')
         rows:
-          - {bidding_zone: "10YNL----------L", market_date: "2026-09-10", price_eur_mwh: 50.0, resolution_minutes: 60}
-          - {bidding_zone: "10YNL----------L", market_date: "2026-09-20", price_eur_mwh: 60.0, resolution_minutes: 60}
+          - {bidding_zone: "10YNL----------L", market_date: "2025-10-01", price_eur_mwh: 50.0, resolution_minutes: 60, ingested_at: "2026-10-09 15:00:00"}
+          - {bidding_zone: "10YNL----------L", market_date: "2026-09-20", price_eur_mwh: 60.0, resolution_minutes: 60, ingested_at: "2026-09-20 13:00:00"}
+          - {bidding_zone: "10YNL----------L", market_date: "2026-09-20", price_eur_mwh: 70.0, resolution_minutes: 60, ingested_at: "2026-09-26 13:00:00"}
+          - {bidding_zone: "10YBE----------2", market_date: "2026-09-20", price_eur_mwh: 65.0, resolution_minutes: 60, ingested_at: "2026-09-20 13:00:00"}
+          - {bidding_zone: "10YNL----------L", market_date: "2026-09-24", price_eur_mwh: 80.0, resolution_minutes: 60, ingested_at: "2026-09-24 13:00:00"}
       - input: ref('dim_bidding_zone')
         rows:
           - {bidding_zone_sk: "nl", bidding_zone_eic: "10YNL----------L"}
+          - {bidding_zone_sk: "be", bidding_zone_eic: "10YBE----------2"}
     expect:
       rows:
-        - {bidding_zone_sk: "nl", market_date: "2026-09-20"}
+        - {bidding_zone_sk: "nl", market_date: "2025-10-01", interval_count: 1, avg_price_eur_mwh: 50.0}
+        - {bidding_zone_sk: "nl", market_date: "2026-09-20", interval_count: 2, avg_price_eur_mwh: 65.0}

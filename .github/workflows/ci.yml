@@ -43,6 +43,10 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+      # Preinstalled on GitHub's Ubuntu runners.
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+
       - name: Mypy
         run: mypy
 

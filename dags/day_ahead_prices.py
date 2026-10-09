@@ -14,8 +14,13 @@ What makes it safe to rerun and backfill:
 
 * Every file and raw delivery is keyed on zone and date, so a rerun replaces
   exactly that zone's day and never touches another zone's.
-* max_active_runs=1 keeps a backfill to one day at a time, well inside
-  ENTSO-E's rate limit.
+* Catch-up after an outage replays the missed days one run at a time
+  (max_active_runs=1). A backfill ignores that limit and sets its own, which
+  `make backfill` keeps small. Either way requests stay far inside ENTSO-E's
+  rate limit.
+* Backfill runs skip dbt. The next scheduled or manual run builds every
+  backfilled day at once: the fact table rebuilds whichever days received
+  data since its last build, however old they are.
 * Each stage is its own task. A parser bug is fixed by clearing parse and
   rerunning from there, never by re-fetching.
 * Loads into the warehouse run one at a time: DuckDB allows a single writer.
@@ -151,7 +156,19 @@ def day_ahead_prices() -> None:
 
     @task.bash
     def transform() -> str:
-        """Build and test every dbt model. Any failing dbt test fails the run."""
+        """Build and test every dbt model. Any failing dbt test fails the run.
+
+        Skipped in backfill runs. A backfill is hundreds of runs, and dbt after
+        each one would cost an hour and fight the backfill's own loads for
+        DuckDB's single writer lock. The next scheduled or manual run builds
+        every backfilled day in one go.
+        """
+        from airflow.exceptions import AirflowSkipException
+
+        if get_current_context()["dag_run"].run_type == "backfill":
+            raise AirflowSkipException(
+                "backfill run: dbt runs once after the backfill, not per day"
+            )
         return f"cd {DBT_PROJECT_DIR} && {DBT_BIN} deps && {DBT_BIN} build --target {DBT_TARGET}"
 
     deliveries = extract.expand(zone=sorted(ZONES))

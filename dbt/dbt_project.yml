@@ -53,5 +53,3 @@ vars:
   logical_date: "1970-01-01"
   # The day-ahead auction defines days in Central European time, for every zone.
   market_timezone: "Europe/Brussels"
-  # Incremental marts rebuild this many trailing days so late revisions land.
-  revision_lookback_days: 7

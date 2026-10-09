@@ -10,13 +10,16 @@ from __future__ import annotations
 import csv
 from itertools import pairwise
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 pytest.importorskip("airflow")
 
+from airflow.exceptions import AirflowSkipException
 from airflow.models import DagBag
+from airflow.utils.types import DagRunType
 
 DAGS = Path(__file__).parent.parent / "dags"
 ZONES_SEED = Path(__file__).parent.parent / "dbt" / "seeds" / "bidding_zones.csv"
@@ -40,8 +43,9 @@ def test_tasks_run_in_pipeline_order(dag: Any) -> None:
         assert downstream in dag.get_task(upstream).downstream_task_ids
 
 
-def test_backfills_are_safe(dag: Any) -> None:
-    """catchup replays history; one run at a time keeps it inside the rate limit."""
+def test_catchup_replays_missed_days_one_at_a_time(dag: Any) -> None:
+    """After an outage, catchup replays the missed days, one run at a time.
+    Backfills ignore this limit and set their own: see scripts/backfill.sh."""
     assert dag.catchup is True
     assert dag.max_active_runs == 1
 
@@ -68,3 +72,30 @@ def test_fans_out_one_task_per_zone_in_the_seed(dag: Any) -> None:
 def test_warehouse_writes_are_serialised(dag: Any) -> None:
     """DuckDB allows one writer. Parallel loads locked each other out."""
     assert dag.get_task("load").max_active_tis_per_dag == 1
+
+
+def _transform(dag: Any, monkeypatch: pytest.MonkeyPatch, run_type: DagRunType) -> str:
+    """Call the transform task's own function as a run of this type would."""
+    function = dag.get_task("transform").python_callable
+    context = {"dag_run": SimpleNamespace(run_type=run_type)}
+    monkeypatch.setitem(function.__globals__, "get_current_context", lambda: context)
+    command: str = function()
+    return command
+
+
+def test_backfill_runs_skip_dbt(dag: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backfill is hundreds of runs. dbt after each one would take an hour and
+    fight the backfill's loads for DuckDB's single writer lock."""
+    with pytest.raises(AirflowSkipException):
+        _transform(dag, monkeypatch, DagRunType.BACKFILL_JOB)
+
+
+@pytest.mark.parametrize(
+    "run_type", [DagRunType.SCHEDULED, DagRunType.MANUAL, DagRunType.ASSET_TRIGGERED]
+)
+def test_every_other_run_builds_and_tests_with_dbt(
+    dag: Any, monkeypatch: pytest.MonkeyPatch, run_type: DagRunType
+) -> None:
+    """The run after a backfill must build: it is what brings the backfilled
+    days into the marts."""
+    assert "dbt build" in _transform(dag, monkeypatch, run_type)

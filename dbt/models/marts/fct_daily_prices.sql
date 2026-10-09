@@ -1,16 +1,18 @@
 -- Fact: day-ahead prices per bidding zone per market day.
 --
 -- Incremental, delete+insert on (bidding_zone_sk, market_date), so a rerun
--- replaces a day rather than duplicating it. Each incremental run rebuilds a
--- trailing window of market days, not only new ones: ENTSO-E republishes
--- corrections for days already built, and a correction arriving outside the
--- rebuilt window would never reach this table.
+-- replaces a day rather than duplicating it.
 --
--- The window is anchored on the latest day already built here, not the latest
--- day in staging. After an outage staging jumps ahead by many days; a window
--- anchored on staging would cover only the newest few and leave a permanent
--- gap behind them. Anchored on this table, everything since the last build is
--- rebuilt, however long the outage.
+-- Which days to rebuild is decided by arrival time, not by market date: every
+-- day that received a delivery since this table was last built. That covers
+-- tomorrow's freshly published prices, a correction to last week, and a
+-- backfill of a day from last year alike. An earlier version rebuilt a window
+-- of market days behind the newest one built here; days loaded by a backfill
+-- fell outside that window and never reached this table, while every test
+-- still passed.
+--
+-- A day is always rebuilt from all of its intervals in staging, not only the
+-- newly arrived ones, so a partly corrected day is aggregated whole.
 
 {{
     config(
@@ -20,14 +22,37 @@
     )
 }}
 
-with intervals as (
+with staged as (
 
     select * from {{ ref('stg_day_ahead_prices') }}
 
+),
+
+{% if is_incremental() %}
+
+-- Staging keeps one delivery per interval, and a newer delivery wins it, so a
+-- day changed exactly when one of its rows now carries a later ingestion time
+-- than anything this table has seen.
+changed_days as (
+
+    select distinct bidding_zone, market_date
+    from staged
+    where ingested_at > (
+        select coalesce(max(last_ingested_at), timestamp '1900-01-01') from {{ this }}
+    )
+
+),
+
+{% endif %}
+
+intervals as (
+
+    select s.*
+    from staged as s
     {% if is_incremental() %}
-    where market_date >= (
-        select coalesce(max(market_date), date '1900-01-01') from {{ this }}
-    ) - {{ var('revision_lookback_days') }}
+    inner join changed_days as c
+        on s.bidding_zone = c.bidding_zone
+        and s.market_date = c.market_date
     {% endif %}
 
 ),

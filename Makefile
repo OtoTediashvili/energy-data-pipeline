@@ -60,7 +60,25 @@ clean: ## Remove generated artefacts
 	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-reset-data: ## Wipe local landing zone and warehouse
-	rm -rf data/landing/* data/warehouse/*
+DAG_ID := day_ahead_prices
 
-.PHONY: help install fmt lint typecheck test test-all check dbt-deps dbt-build dbt-docs up password down logs clean reset-data
+unpause: ## Unpause the DAG; the scheduler catches up every day since its start date
+	docker compose exec -T airflow-scheduler airflow dags unpause $(DAG_ID)
+
+backfill: ## Backfill days FROM up to, not including, TO; e.g. make backfill FROM=2025-10-01 TO=2026-09-20
+	./scripts/backfill.sh "$(FROM)" "$(TO)"
+
+# `airflow dags delete` removes a DAG's backfills before the runs that point at
+# them, which a foreign key refuses once any backfill exists. Unlinking the
+# runs first lets it work.
+reset-history: ## Delete the DAG's runs from Airflow (data files stay); it reappears paused
+	docker compose exec -T airflow-scheduler airflow dags pause $(DAG_ID)
+	docker compose exec -T postgres psql -U airflow -X -v ON_ERROR_STOP=1 \
+		-c "update dag_run set backfill_id = null where dag_id = '$(DAG_ID)'"
+	docker compose exec -T airflow-scheduler airflow dags delete $(DAG_ID) --yes
+	@echo "Run history deleted. The DAG reappears, paused, within a minute."
+
+reset-data: ## Wipe the landing zone, parsed files and warehouse (pause the DAG first)
+	rm -rf data/landing/* data/parsed/* data/warehouse/*
+
+.PHONY: help install fmt lint typecheck test test-all check dbt-deps dbt-build dbt-docs up password down logs clean unpause backfill reset-history reset-data
