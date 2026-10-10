@@ -1,5 +1,13 @@
--- Staging: cast, derive the market day, and collapse deliveries to one row per
--- market time unit.
+-- Staging: keep the main auction, cast, derive the market day, and collapse
+-- deliveries to one row per market time unit.
+--
+-- Some zones have two day-ahead auctions. Austria has the main European one
+-- (SDAC, auction_sequence 1) and EXAA's separate 10:15 auction (2); zones with
+-- one auction carry no sequence. Only the main auction is the day-ahead price
+-- the market settles on, so staging keeps it alone. From October 2025 both are
+-- quarter-hourly with identical timestamps: without this filter the dedup
+-- below picked one of two prices per quarter-hour at random, and every test
+-- passed. EXAA's rows stay in raw.
 --
 -- Raw is a delivery log. Consecutive runs overlap by one market day, and
 -- ENTSO-E republishes corrections under a higher revisionNumber, so the same
@@ -12,6 +20,13 @@ with source as (
 
 ),
 
+main_auction as (
+
+    select * from source
+    where coalesce(auction_sequence, 1) = 1
+
+),
+
 ranked as (
 
     select
@@ -20,7 +35,7 @@ ranked as (
             partition by bidding_zone, interval_start_utc
             order by revision_number desc, _ingested_at desc, _logical_date desc
         ) as delivery_rank
-    from source
+    from main_auction
 
 )
 

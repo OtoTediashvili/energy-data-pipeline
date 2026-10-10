@@ -3,8 +3,9 @@ version: 2
 models:
   - name: stg_day_ahead_prices
     description: >
-      One row per bidding zone per market time unit: the highest revision,
-      then the latest ingestion, of every delivery raw received.
+      One row per bidding zone per market time unit of the main day-ahead
+      auction: the highest revision, then the latest ingestion, of every
+      delivery raw received. A second auction (EXAA for Austria) stays in raw.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
@@ -92,3 +93,25 @@ unit_tests:
         - {bidding_zone: "10YBE----------2", interval_start_utc: "2026-09-24 22:00:00+00", market_date: "2026-09-25"}
         - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-01-14 22:00:00+00", market_date: "2026-01-14"}
         - {bidding_zone: "10YNL----------L", interval_start_utc: "2026-01-14 23:00:00+00", market_date: "2026-01-15"}
+
+  - name: stg_keeps_only_the_main_auction
+    description: >
+      Austria's deliveries price the same quarter-hours twice: the main
+      European auction (sequence 1) and EXAA's (sequence 2). Staging keeps the
+      main auction even where EXAA's row carries a higher revision, so the
+      auction is chosen before deliveries are ranked. A zone with one auction
+      has no sequence and is kept as it is.
+    model: stg_day_ahead_prices
+    given:
+      - input: source('raw', 'day_ahead_prices')
+        rows:
+          - {bidding_zone: "10YAT-APG------L", interval_start_utc: "2025-09-30 22:00:00+00", price_eur_mwh: 100.0, revision_number: 1, auction_sequence: 1}
+          - {bidding_zone: "10YAT-APG------L", interval_start_utc: "2025-09-30 22:00:00+00", price_eur_mwh: 300.0, revision_number: 1, auction_sequence: 2}
+          - {bidding_zone: "10YAT-APG------L", interval_start_utc: "2025-09-30 22:15:00+00", price_eur_mwh: 101.0, revision_number: 1, auction_sequence: 1}
+          - {bidding_zone: "10YAT-APG------L", interval_start_utc: "2025-09-30 22:15:00+00", price_eur_mwh: 301.0, revision_number: 2, auction_sequence: 2}
+          - {bidding_zone: "10YNL----------L", interval_start_utc: "2025-09-30 22:00:00+00", price_eur_mwh: 90.0, revision_number: 1}
+    expect:
+      rows:
+        - {bidding_zone: "10YAT-APG------L", interval_start_utc: "2025-09-30 22:00:00+00", price_eur_mwh: 100.0}
+        - {bidding_zone: "10YAT-APG------L", interval_start_utc: "2025-09-30 22:15:00+00", price_eur_mwh: 101.0}
+        - {bidding_zone: "10YNL----------L", interval_start_utc: "2025-09-30 22:00:00+00", price_eur_mwh: 90.0}

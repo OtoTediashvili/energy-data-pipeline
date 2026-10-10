@@ -3,11 +3,13 @@
 The real fixture proves the parser handles what ENTSO-E actually sends. The
 synthetic documents cover what the real sample happened not to contain: gaps
 in an A03 curve, a 25-hour DST day, hourly resolution, negative prices,
-acknowledgements, and the malformed cases that must fail loudly.
+acknowledgements, a zone with two auctions, and the malformed cases that must
+fail loudly.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
@@ -30,6 +32,7 @@ from pipeline.parse import (
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "entsoe_a44_nl_20260924.xml"
+TWO_AUCTIONS = Path(__file__).parent / "fixtures" / "entsoe_a44_at_two_auctions_20250930.xml"
 NS = "urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3"
 NL = "10YNL----------L"
 
@@ -47,12 +50,15 @@ def build_doc(
     curve_type: str = "A03",
     namespace: str = NS,
     revision: int = 1,
+    sequence: str | None = None,
 ) -> bytes:
     """A minimal A44 document with one series and one period."""
     point_xml = "".join(
         f"<Point><position>{pos}</position><price.amount>{price}</price.amount></Point>"
         for pos, price in points
     )
+    tag = "classificationSequence_AttributeInstanceComponent.position"
+    sequence_xml = f"<{tag}>{sequence}</{tag}>" if sequence is not None else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Publication_MarketDocument xmlns="{namespace}">
   <mRID>synthetic</mRID>
@@ -65,6 +71,7 @@ def build_doc(
     <out_Domain.mRID codingScheme="A01">{NL}</out_Domain.mRID>
     <currency_Unit.name>EUR</currency_Unit.name>
     <price_Measure_Unit.name>MWH</price_Measure_Unit.name>
+    {sequence_xml}
     <curveType>{curve_type}</curveType>
     <Period>
       <timeInterval><start>{start}</start><end>{end}</end></timeInterval>
@@ -125,6 +132,68 @@ def test_real_fixture_carries_document_lineage(real_rows: list[PricePoint]) -> N
 
 def test_real_fixture_timestamps_are_utc_aware(real_rows: list[PricePoint]) -> None:
     assert all(r.interval_start_utc.utcoffset() == timedelta(0) for r in real_rows)
+
+
+# ------------------------------------------------------------ two auctions
+
+
+@pytest.fixture(scope="module")
+def austria_rows() -> list[PricePoint]:
+    return parse_prices(TWO_AUCTIONS.read_bytes())
+
+
+def test_every_row_records_its_auction(austria_rows: list[PricePoint]) -> None:
+    """Austria's document holds the main European auction (1), hourly until
+    30 September, and EXAA's (2). Both are kept and labelled; staging decides."""
+    counts = Counter((r.auction_sequence, r.resolution_minutes) for r in austria_rows)
+    assert counts == {(1, 60): 24, (1, 15): 96, (2, 15): 192}
+
+
+def test_only_the_label_tells_two_quarter_hourly_auctions_apart(
+    austria_rows: list[PricePoint],
+) -> None:
+    """From 1 October both auctions price the same 96 quarter-hours, at
+    different prices. By (zone, interval) they collide, which is how they
+    mixed silently before the label was recorded."""
+    first_15_minute_day = [r for r in austria_rows if r.interval_start_utc >= utc(2025, 9, 30, 22)]
+    prices = {
+        seq: {
+            r.interval_start_utc: r.price_eur_mwh
+            for r in first_15_minute_day
+            if r.auction_sequence == seq
+        }
+        for seq in (1, 2)
+    }
+    assert prices[1].keys() == prices[2].keys()
+    assert len(prices[1]) == 96
+    assert all(prices[1][start] != prices[2][start] for start in prices[1])
+
+
+@pytest.mark.parametrize("auction", [1, 2])
+def test_each_auction_alone_tiles_the_window(austria_rows: list[PricePoint], auction: int) -> None:
+    """Within one auction every interval is unique and the intervals neither
+    overlap nor leave a gap, whatever the resolution."""
+    rows = sorted(
+        (r for r in austria_rows if r.auction_sequence == auction),
+        key=lambda r: r.interval_start_utc,
+    )
+    assert all(a.interval_end_utc == b.interval_start_utc for a, b in pairwise(rows))
+    assert rows[0].interval_start_utc == utc(2025, 9, 29, 22)
+    assert rows[-1].interval_end_utc == utc(2025, 10, 1, 22)
+
+
+def test_a_zone_with_one_auction_has_no_sequence(real_rows: list[PricePoint]) -> None:
+    assert {r.auction_sequence for r in real_rows} == {None}
+
+
+def test_a_labelled_series_records_its_number() -> None:
+    rows = parse_prices(build_doc([(1, 10.0)], sequence="2"))
+    assert {r.auction_sequence for r in rows} == {2}
+
+
+def test_a_non_numeric_auction_sequence_is_an_error() -> None:
+    with pytest.raises(EntsoeParseError, match="auction sequence"):
+        parse_prices(build_doc([(1, 10.0)], sequence="first"))
 
 
 # ------------------------------------------------------------ curve types

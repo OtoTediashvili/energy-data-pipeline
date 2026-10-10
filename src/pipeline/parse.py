@@ -6,7 +6,7 @@ so a parser bug is fixed by replaying files already on disk, never by
 re-hitting a rate-limited API. parse_landed_file applies it to one landed file
 and writes the result into the parsed zone.
 
-Four properties of the real data drive the design:
+Five properties of the real data drive the design:
 
 1. Market days run on Central European time, the API speaks UTC. One UTC
    request window overlaps two market days, so every row carries its own
@@ -18,6 +18,11 @@ Four properties of the real data drive the design:
    forward-filled and flagged. A01 must be complete, and a gap there is an error.
 4. Errors and "no data" arrive as an Acknowledgement_MarketDocument, sometimes
    with HTTP 200. Those raise, so an empty result can never pass for success.
+5. Some zones have two day-ahead auctions in one document. Austria has the
+   main European auction (SDAC) and EXAA's separate 10:15 auction, labelled
+   with classificationSequence position 1 and 2. From October 2025 both are
+   quarter-hourly, so their rows share every timestamp. Every row records its
+   auction; staging, not the parser, decides which one counts.
 
 Namespaces are matched with a wildcard because ENTSO-E versions them
 (e.g. publicationdocument:7:3), and a version bump must not break parsing.
@@ -76,6 +81,9 @@ class PricePoint:
     document_mrid: str
     revision_number: int
     document_created_utc: datetime | None
+    # classificationSequence position: 1 = the main European auction, 2 = a
+    # second auction (EXAA for Austria). None when a zone has only one.
+    auction_sequence: int | None
 
 
 PARQUET_SCHEMA = pa.schema(
@@ -92,6 +100,7 @@ PARQUET_SCHEMA = pa.schema(
         ("document_mrid", pa.string()),
         ("revision_number", pa.int32()),
         ("document_created_utc", pa.timestamp("us", tz="UTC")),
+        ("auction_sequence", pa.int32()),
     ]
 )
 
@@ -196,6 +205,16 @@ def _expand_period(
     return start, step, expanded
 
 
+def _auction_sequence(series: Element) -> int | None:
+    """Which auction a series belongs to, or None if the zone has only one."""
+    value = _opt_text(series, "classificationSequence_AttributeInstanceComponent.position")
+    if value is None:
+        return None
+    if not value.isdigit():
+        raise EntsoeParseError(f"auction sequence is not a number: {value!r}")
+    return int(value)
+
+
 def parse_prices(payload: bytes) -> list[PricePoint]:
     """Parse one A44 day-ahead price document into rows.
 
@@ -221,6 +240,7 @@ def parse_prices(payload: bytes) -> list[PricePoint]:
         currency = _text(series, "currency_Unit.name")
         unit = _text(series, "price_Measure_Unit.name")
         curve_type = _opt_text(series, "curveType") or "A01"
+        auction_sequence = _auction_sequence(series)
 
         for period in series.findall("{*}Period"):
             start, step, points = _expand_period(period, curve_type)
@@ -241,6 +261,7 @@ def parse_prices(payload: bytes) -> list[PricePoint]:
                         document_mrid=document_mrid,
                         revision_number=revision_number,
                         document_created_utc=document_created,
+                        auction_sequence=auction_sequence,
                     )
                 )
     return rows
