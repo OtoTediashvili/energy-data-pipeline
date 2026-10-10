@@ -9,16 +9,10 @@ sources:
         description: >
           One row per market time unit per delivery. A delivery log, not a
           deduplicated table: overlapping runs and republished revisions both
-          add rows. CI reads the sample seed instead of the live table, so no
+          add rows, and since 2026 ENTSO-E sends some series twice within one
+          document (Belgium, the Czech Republic, Austria's main auction). CI reads the sample seed instead of the live table, so no
           `dbt seed` can ever overwrite real data.
         identifier: "{{ 'day_ahead_prices_sample' if target.name == 'ci' else 'day_ahead_prices' }}"
-        data_tests:
-          # Within one delivery an auction prices each interval once. A second
-          # price would leave staging nothing deterministic to choose between.
-          - dbt_utils.unique_combination_of_columns:
-              arguments:
-                combination_of_columns:
-                  [_source_file, bidding_zone, auction_sequence, interval_start_utc]
         columns:
           - name: auction_sequence
             description: >
