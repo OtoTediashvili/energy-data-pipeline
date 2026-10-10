@@ -233,6 +233,27 @@ def test_land_refuses_an_acknowledgement(settings: Settings) -> None:
     assert _landed_files(settings) == []
 
 
+def test_an_acknowledgement_says_why(settings: Settings) -> None:
+    """ENTSO-E's reason sits after the sender and receiver headers. The error
+    must carry it, or every refusal reads the same in the task log."""
+    padded = ACK.replace(
+        b"<Reason>",
+        b"<mRID>00487115-7699-4</mRID><createdDateTime>2026-10-10T02:25:28Z</createdDateTime>"
+        + b"<sender_MarketParticipant.mRID codingScheme='A01'>10X1001A1001A450</sender_MarketParticipant.mRID>"
+        * 4
+        + b"<Reason>",
+    )
+    assert len(padded) > 400, "the reason must sit beyond the old 400-byte preview"
+    with pytest.raises(PermanentSourceError, match="999: No matching data found"):
+        land(padded, "prices", LOGICAL_DATE, settings, suffix=".xml")
+
+
+def test_an_unparseable_acknowledgement_still_fails_loudly(settings: Settings) -> None:
+    broken = b"<Acknowledgement_MarketDocument><Reason><code>999"
+    with pytest.raises(PermanentSourceError, match="Acknowledgement_MarketDocument"):
+        land(broken, "prices", LOGICAL_DATE, settings, suffix=".xml")
+
+
 def test_acknowledgement_cannot_overwrite_good_landed_data(settings: Settings) -> None:
     """The failure this guard exists for: a rerun on a bad day must never
     destroy the one raw copy of a good day."""

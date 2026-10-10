@@ -15,6 +15,7 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+from defusedxml import ElementTree as SafeET
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -151,8 +152,35 @@ def _reject_acknowledgement(payload: bytes) -> None:
     is not parsing, and the root always sits in the first few hundred bytes.
     """
     if ACKNOWLEDGEMENT_MARKER in payload[:1024]:
-        preview = payload[:400].decode("utf-8", errors="replace")
-        raise PermanentSourceError(f"source returned an Acknowledgement, not data: {preview}")
+        raise PermanentSourceError(
+            f"source returned an Acknowledgement, not data: {_acknowledgement_reason(payload)}"
+        )
+
+
+def _acknowledgement_reason(payload: bytes) -> str:
+    """ENTSO-E's own explanation, e.g. "999: No matching data found for ...".
+
+    The reason sits near the end of the document, after the sender and
+    receiver headers, so a fixed-length preview cut it off and every refusal
+    looked the same in the logs. Falls back to the raw start of the document
+    if it cannot be parsed.
+    """
+    try:
+        root = SafeET.fromstring(payload)
+    except Exception:  # malformed XML, or defusedxml refusing an entity: use the preview
+        return payload[:400].decode("utf-8", errors="replace")
+    reasons = [
+        ": ".join(
+            part
+            for part in (
+                (reason.findtext("{*}code") or "").strip(),
+                (reason.findtext("{*}text") or "").strip(),
+            )
+            if part
+        )
+        for reason in root.findall(".//{*}Reason")
+    ]
+    return "; ".join(r for r in reasons if r) or payload[:400].decode("utf-8", errors="replace")
 
 
 def land(

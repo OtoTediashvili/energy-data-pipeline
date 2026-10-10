@@ -96,6 +96,6 @@ def test_backfill_runs_skip_dbt(dag: Any, monkeypatch: pytest.MonkeyPatch) -> No
 def test_every_other_run_builds_and_tests_with_dbt(
     dag: Any, monkeypatch: pytest.MonkeyPatch, run_type: DagRunType
 ) -> None:
-    """The run after a backfill must build: it is what brings the backfilled
-    days into the marts."""
+    """Every run except a backfill's builds and tests the marts, so a day a
+    scheduled or manual run loads is in the fact table when the run ends."""
     assert "dbt build" in _transform(dag, monkeypatch, run_type)

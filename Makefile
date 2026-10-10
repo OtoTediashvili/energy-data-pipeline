@@ -68,6 +68,9 @@ unpause: ## Unpause the DAG; the scheduler catches up every day since its start 
 backfill: ## Backfill days FROM up to, not including, TO; e.g. make backfill FROM=2025-10-01 TO=2026-09-20
 	./scripts/backfill.sh "$(FROM)" "$(TO)"
 
+build-marts: ## Build and test every dbt model now, without a DAG run
+	./scripts/build_marts.sh
+
 # `airflow dags delete` removes a DAG's backfills before the runs that point at
 # them, which a foreign key refuses once any backfill exists. Unlinking the
 # runs first lets it work.
@@ -76,9 +79,18 @@ reset-history: ## Delete the DAG's runs from Airflow (data files stay); it reapp
 	docker compose exec -T postgres psql -U airflow -X -v ON_ERROR_STOP=1 \
 		-c "update dag_run set backfill_id = null where dag_id = '$(DAG_ID)'"
 	docker compose exec -T airflow-scheduler airflow dags delete $(DAG_ID) --yes
-	@echo "Run history deleted. The DAG reappears, paused, within a minute."
+	@# Airflow re-registers the DAG on its next scan of the dags folder, paused.
+	@# Commands run before that find no DAG, so wait for it here.
+	@echo "Run history deleted. Waiting for Airflow to find the DAG again..."
+	@for i in $$(seq 1 36); do \
+		found=$$(docker compose exec -T postgres psql -U airflow -AtX \
+			-c "select count(*) from dag where dag_id = '$(DAG_ID)'"); \
+		if [ "$$found" = 1 ]; then echo "The DAG is back, paused, with no runs."; exit 0; fi; \
+		sleep 5; \
+	done; \
+	echo "Still missing after 3 minutes: check make logs for the dag processor."; exit 1
 
 reset-data: ## Wipe the landing zone, parsed files and warehouse (pause the DAG first)
 	rm -rf data/landing/* data/parsed/* data/warehouse/*
 
-.PHONY: help install fmt lint typecheck test test-all check dbt-deps dbt-build dbt-docs up password down logs clean unpause backfill reset-history reset-data
+.PHONY: help install fmt lint typecheck test test-all check dbt-deps dbt-build dbt-docs up password down logs clean unpause backfill build-marts reset-history reset-data

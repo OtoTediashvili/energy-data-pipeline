@@ -18,9 +18,9 @@ What makes it safe to rerun and backfill:
   (max_active_runs=1). A backfill ignores that limit and sets its own, which
   `make backfill` keeps small. Either way requests stay far inside ENTSO-E's
   rate limit.
-* Backfill runs skip dbt. The next scheduled or manual run builds every
-  backfilled day at once: the fact table rebuilds whichever days received
-  data since its last build, however old they are.
+* Backfill runs skip dbt. `make backfill` ends with one dbt build, and every
+  later scheduled run builds too: the fact table rebuilds whichever days
+  received data since its last build, however old they are.
 * Each stage is its own task. A parser bug is fixed by clearing parse and
   rerunning from there, never by re-fetching.
 * Loads into the warehouse run one at a time: DuckDB allows a single writer.
@@ -160,8 +160,8 @@ def day_ahead_prices() -> None:
 
         Skipped in backfill runs. A backfill is hundreds of runs, and dbt after
         each one would cost an hour and fight the backfill's own loads for
-        DuckDB's single writer lock. The next scheduled or manual run builds
-        every backfilled day in one go.
+        DuckDB's single writer lock. `make backfill` builds once at the end
+        (scripts/build_marts.sh), bringing every backfilled day in at once.
         """
         from airflow.exceptions import AirflowSkipException
 

@@ -4,9 +4,9 @@
 #   make backfill FROM=2025-10-01 TO=2026-09-20
 #
 # Runs the DAG for every day from FROM up to, not including, TO, waits for the
-# runs to finish, then triggers one normal run so dbt builds every backfilled
-# day. Days that already have a run are left alone. Set REPROCESS=failed to
-# rerun the days a previous backfill failed.
+# runs to finish, then builds the marts once (make build-marts), bringing every
+# backfilled day in. Days that already have a run are left alone. Set
+# REPROCESS=failed to rerun the days a previous backfill failed.
 #
 # Each guard below is a behaviour of Airflow 3.0 found by testing, not assumed:
 #
@@ -17,8 +17,10 @@
 #    and each of them then blocks any later backfill of its day.
 #  * A backfill ignores the DAG's max_active_runs (one at a time) and defaults
 #    to 10 runs at once. MAX_ACTIVE_RUNS sets it explicitly.
-#  * Backfill runs skip dbt (see the DAG), so the run triggered at the end is
-#    what brings the backfilled days into the marts.
+#  * Backfill runs skip dbt (see the DAG), so the build at the end is what
+#    brings the backfilled days into the marts. It runs dbt directly: a
+#    triggered run would first download today's prices, which ENTSO-E refuses
+#    until the day's auction is published.
 set -euo pipefail
 
 DAG_ID=day_ahead_prices
@@ -99,6 +101,5 @@ if [[ $failed -gt 0 ]]; then
 fi
 
 if [[ $finished -gt $failed ]]; then
-    airflow dags trigger "$DAG_ID" >/dev/null
-    echo "Triggered a run of $DAG_ID: its dbt build brings the backfilled days into the marts."
+    "$(dirname "$0")/build_marts.sh"
 fi
