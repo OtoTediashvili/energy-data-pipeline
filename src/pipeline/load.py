@@ -116,29 +116,6 @@ def _replace_partition(
     return rows
 
 
-def load_json_partition(
-    conn: duckdb.DuckDBPyConnection,
-    source_file: Path,
-    table: str,
-    logical_date: date,
-    settings: Settings | None = None,
-) -> int:
-    """Load one landed JSON file into raw.<table>, replacing any prior run.
-
-    The demo path. read_json_auto infers the schema; in production you would
-    pin an explicit columns={...} spec so an upstream schema change fails
-    loudly here rather than silently reshaping downstream models.
-    """
-    return _replace_partition(
-        conn,
-        "read_json_auto(?, hive_partitioning=false)",
-        source_file,
-        table,
-        logical_date,
-        settings,
-    )
-
-
 def load_parquet_partition(
     conn: duckdb.DuckDBPyConnection,
     source_file: Path,
@@ -149,8 +126,8 @@ def load_parquet_partition(
     """Load one parsed-zone Parquet file into raw.<table>, replacing any prior run.
 
     The schema arrives pinned from parse.PARQUET_SCHEMA. hive_partitioning=false
-    for the same reason as the JSON path: the parsed zone uses dataset=/year=/
-    month= directories, which DuckDB would otherwise turn into three columns.
+    because the parsed zone uses dataset=/zone=/year=/month= directories, which
+    DuckDB would otherwise turn into extra columns.
     """
     return _replace_partition(
         conn, "read_parquet(?, hive_partitioning=false)", source_file, table, logical_date, settings

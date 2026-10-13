@@ -9,7 +9,7 @@ Every day at 13:00 UTC this pipeline collects the next day's wholesale electrici
 | **History** | 379 market days per zone on 13 Oct 2026 (from 30 Sep 2025, no gaps), growing daily |
 | **Grain** | ≈145,000 quarter-hour prices in staging; one row per zone per day in the fact table |
 | **Stack** | Airflow 3 · dbt · DuckDB · Python 3.12 · Docker Compose · GitHub Actions |
-| **Tests** | 96 Python tests (97% coverage), 10 DAG tests under Airflow, 32 dbt tests, all in CI |
+| **Tests** | 91 Python tests (97% coverage), 10 DAG tests under Airflow, 32 dbt tests, all in CI |
 
 ## Architecture
 

@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Runners are pinned, not ubuntu-latest: from 19 October 2026 GitHub moves
+# ubuntu-latest to 26.04, and an image change should be a commit here, not a
+# surprise in a red build. Actions are on Node 24 releases; Node 20 is gone.
 env:
   PYTHON_VERSION: "3.12"
   GITLEAKS_VERSION: "8.23.3"
@@ -17,11 +20,11 @@ env:
 jobs:
   quality:
     name: Lint, types, tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
@@ -54,7 +57,7 @@ jobs:
         run: pytest -m "not integration" --cov-report=xml
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: coverage
@@ -64,11 +67,11 @@ jobs:
 
   dags:
     name: Airflow DAGs import cleanly
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
@@ -120,11 +123,11 @@ jobs:
 
   dbt:
     name: dbt parses and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
@@ -157,7 +160,7 @@ jobs:
 
   security:
     name: Secret scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
         with:
